@@ -120,6 +120,7 @@ function AdminPage() {
           <div className="flex gap-2">
             <Link href="/admin/floor"><Button variant="outline"><LayoutDashboard className="h-4 w-4 mr-2" /> Floor Map</Button></Link>
             <Link href="/kitchen"><Button variant="outline"><ChefHat className="h-4 w-4 mr-2" /> Kitchen Live</Button></Link>
+            <Link href="/waiter"><Button variant="outline"><Utensils className="h-4 w-4 mr-2" /> Waiter</Button></Link>
             <Button variant="outline" onClick={logout}><LogOut className="h-4 w-4 mr-2" /> Logout</Button>
           </div>
         </div>

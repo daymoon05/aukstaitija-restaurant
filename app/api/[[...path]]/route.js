@@ -430,6 +430,55 @@ async function handleRoute(request, { params }) {
       return handleCORS(NextResponse.json(orders.map(stripId)))
     }
 
+    // ---------------- Waiter ----------------
+    // GET /waiter/orders (admin) — dine-in orders that are ready or in-service
+    // (waiter has picked them up but not yet served). Sorted by ready_at asc so
+    // the longest-waiting plate is on top.
+    if (route === '/waiter/orders' && method === 'GET') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const orders = await db.collection('orders').find({
+        $and: [
+          { $or: [{ order_type: 'dine_in' }, { type: 'dine-in' }, { table_id: { $ne: null } }] },
+          { status: { $in: ['ready'] } },
+          { serve_status: { $ne: 'served' } },
+        ]
+      }).sort({ priority: -1, ready_at: 1, created_at: 1 }).toArray()
+      return handleCORS(NextResponse.json(orders.map(stripId)))
+    }
+
+    // POST /orders/:id/waiter-pickup (admin) — waiter picked the plate up from
+    // the pass and is walking it to the table. Status stays 'ready' (it's still
+    // on a tray) but we mark serve_status so customer/kitchen know it's moving.
+    if (path[0] === 'orders' && path.length === 3 && path[2] === 'waiter-pickup' && method === 'POST') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const order = await db.collection('orders').findOne({ id: path[1] })
+      if (!order) return handleCORS(NextResponse.json({ error: 'Order not found' }, { status: 404 }))
+      await db.collection('orders').updateOne({ id: path[1] }, { $set: {
+        serve_status: 'picked_up_by_waiter',
+        waiter_picked_up_at: new Date(),
+        updated_at: new Date(),
+      } })
+      const updated = await db.collection('orders').findOne({ id: path[1] })
+      return handleCORS(NextResponse.json(stripId(updated)))
+    }
+
+    // POST /orders/:id/served (admin) — waiter has just placed the food on the
+    // guest's table. This is the dine-in equivalent of 'delivered'.
+    if (path[0] === 'orders' && path.length === 3 && path[2] === 'served' && method === 'POST') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const order = await db.collection('orders').findOne({ id: path[1] })
+      if (!order) return handleCORS(NextResponse.json({ error: 'Order not found' }, { status: 404 }))
+      await db.collection('orders').updateOne({ id: path[1] }, { $set: {
+        serve_status: 'served',
+        served_at: new Date(),
+        status: 'delivered',
+        delivered_at: new Date(),
+        updated_at: new Date(),
+      } })
+      const updated = await db.collection('orders').findOne({ id: path[1] })
+      return handleCORS(NextResponse.json(stripId(updated)))
+    }
+
     // ---------------- Reservations ----------------
     // POST /reservations
     if (route === '/reservations' && method === 'POST') {

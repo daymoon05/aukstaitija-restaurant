@@ -178,7 +178,13 @@ function OrderCard({ order, onAccept, onReady, onDispatch, onPickedUp, onPriorit
             <Bike className="h-4 w-4 mr-1" /> Dispatch Courier
           </Button>
         )}
-        {order.status === 'ready' && !isDelivery && (
+        {order.status === 'ready' && !isDelivery && order.type === 'dine-in' && (
+          <div className="flex-1 h-11 px-3 rounded-md bg-blue-500/10 border border-blue-500/30 flex items-center justify-center gap-2 text-sm text-blue-700 dark:text-blue-300">
+            <Utensils className="h-4 w-4" />
+            <span>Waiter will collect</span>
+          </div>
+        )}
+        {order.status === 'ready' && !isDelivery && order.type !== 'dine-in' && (
           <Button onClick={() => onDispatch(order)} className="flex-1 h-11 bg-primary">
             <CheckCircle2 className="h-4 w-4 mr-1" /> Hand Over
           </Button>
