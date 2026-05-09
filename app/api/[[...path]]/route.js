@@ -497,6 +497,42 @@ async function handleRoute(request, { params }) {
       }))
     }
 
+    // POST /tables/:id/start-session — PUBLIC (QR scan auto-occupy)
+    // Idempotent: if active session exists, returns it. Otherwise creates a walk-in session and sets table=occupied.
+    if (path[0] === 'tables' && path.length === 3 && path[2] === 'start-session' && method === 'POST') {
+      const table = await db.collection('tables').findOne({ id: path[1] })
+      if (!table) return handleCORS(NextResponse.json({ error: 'Table not found' }, { status: 404 }))
+      if (table.status === 'out_of_service') {
+        return handleCORS(NextResponse.json({ error: 'Table is out of service. Please ask your server.' }, { status: 400 }))
+      }
+      if (table.status === 'cleaning') {
+        return handleCORS(NextResponse.json({ error: 'Table is being cleaned. Please ask your server.' }, { status: 400 }))
+      }
+      let session = await getActiveSession(db, path[1])
+      let created = false
+      if (!session) {
+        session = {
+          id: uuidv4(),
+          table_id: path[1],
+          customer_name: 'Guest',
+          guests: 0, // unknown until they order
+          started_at: new Date(),
+          ended_at: null,
+          session_status: 'active',
+          origin: 'qr_scan',
+        }
+        await db.collection('table_sessions').insertOne(session)
+        await setTableStatus(db, path[1], 'occupied')
+        created = true
+      }
+      return handleCORS(NextResponse.json({
+        ok: true,
+        created,
+        session: stripId(session),
+        table: { id: table.id, number: table.number, capacity: table.capacity, section: table.section, status: 'occupied' },
+      }))
+    }
+
     // PUT /tables/:id (admin) — update status / capacity / position / out_of_service
     if (path[0] === 'tables' && path.length === 2 && method === 'PUT') {
       if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
