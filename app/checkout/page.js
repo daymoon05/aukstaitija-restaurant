@@ -26,6 +26,7 @@ function CheckoutInner() {
   const [notes, setNotes] = useState('')
   const [payment, setPayment] = useState('cash')
   const [submitting, setSubmitting] = useState(false)
+  const [redirectingToOrder, setRedirectingToOrder] = useState(false)
   const [zones, setZones] = useState([])
   const [zoneId, setZoneId] = useState('')
   const [provider, setProvider] = useState('in_house')
@@ -38,7 +39,11 @@ function CheckoutInner() {
   const deliveryFee = type === 'delivery' ? (selectedZone?.fee ?? 3.50) : 0
   const total = +(cartSubtotal + tax + deliveryFee - discount).toFixed(2)
 
-  useEffect(() => { if (hydrated && cart.length === 0) router.push('/menu') }, [cart, router, hydrated])
+  // Bounce to /menu only when the cart is empty AND we're not in the middle of redirecting
+  // the customer to their newly-created order page (which clears the cart on the way).
+  useEffect(() => {
+    if (hydrated && cart.length === 0 && !redirectingToOrder) router.push('/menu')
+  }, [cart, router, hydrated, redirectingToOrder])
   useEffect(() => { if (tableId) setType('dine-in') }, [tableId])
   useEffect(() => {
     fetch('/api/delivery-zones').then(r => r.json()).then(d => {
@@ -82,10 +87,13 @@ function CheckoutInner() {
       })
       const data = await res.json()
       if (data.id) {
+        // Lock the cart-empty bouncer BEFORE clearing cart, so we head to the
+        // order page instead of being redirected to /menu when the cart empties.
+        setRedirectingToOrder(true)
         toast.success('Order sent to kitchen!')
-        clearCart()
-        // Redirect using the human-friendly order number (e.g. /order/AK020909)
+        // Navigate first so the URL changes immediately, then clear the cart.
         router.push(`/order/${data.order_number || data.id}`)
+        clearCart()
       } else {
         toast.error(data.error || 'Failed')
       }
@@ -129,7 +137,7 @@ function CheckoutInner() {
             {/* Customer info */}
             <Card className="p-6 bg-card grid sm:grid-cols-2 gap-4">
               <div><Label>{t('checkout.name')} *</Label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required /></div>
-              <div><Label>{t('checkout.phone')} *</Label><Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} required /></div>
+              <div><Label>{t('checkout.phone')} {tableId ? '' : '*'}</Label><Input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} required={!tableId} /></div>
               <div className="sm:col-span-2"><Label>{t('checkout.email')}</Label><Input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></div>
               {type === 'delivery' && (
                 <>
