@@ -540,9 +540,48 @@ async function handleRoute(request, { params }) {
       const update = {}
       const allowed = ['status', 'capacity', 'section', 'x', 'y', 'number']
       for (const k of allowed) if (body[k] !== undefined) update[k] = body[k]
+      if (update.capacity !== undefined) update.capacity = parseInt(update.capacity)
+      if (update.x !== undefined) update.x = parseInt(update.x)
+      if (update.y !== undefined) update.y = parseInt(update.y)
+      if (update.number !== undefined) update.number = parseInt(update.number)
       await db.collection('tables').updateOne({ id: path[1] }, { $set: update })
       const updated = await db.collection('tables').findOne({ id: path[1] })
       return handleCORS(NextResponse.json(stripId(updated)))
+    }
+
+    // POST /tables (admin) — create new table
+    if (route === '/tables' && method === 'POST') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const body = await request.json()
+      // Auto-pick next number if not provided
+      let number = parseInt(body.number)
+      if (!number) {
+        const max = await db.collection('tables').find({}).sort({ number: -1 }).limit(1).toArray()
+        number = (max[0]?.number || 0) + 1
+      }
+      const newTable = {
+        id: body.id || `t${number}`,
+        number,
+        capacity: parseInt(body.capacity) || 2,
+        status: 'available',
+        section: body.section || 'Main Hall',
+        x: parseInt(body.x) || 0,
+        y: parseInt(body.y) || 0,
+      }
+      // Avoid id collision
+      const existing = await db.collection('tables').findOne({ id: newTable.id })
+      if (existing) newTable.id = `t${number}_${Date.now().toString().slice(-4)}`
+      await db.collection('tables').insertOne(newTable)
+      return handleCORS(NextResponse.json(stripId(newTable)))
+    }
+
+    // DELETE /tables/:id (admin) — only if no active session
+    if (path[0] === 'tables' && path.length === 2 && method === 'DELETE') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const session = await getActiveSession(db, path[1])
+      if (session) return handleCORS(NextResponse.json({ error: 'Cannot delete a table with an active session. Close the table first.' }, { status: 400 }))
+      await db.collection('tables').deleteOne({ id: path[1] })
+      return handleCORS(NextResponse.json({ ok: true }))
     }
 
     // POST /tables/:id/walkin (admin) — { guests, customer_name? }
