@@ -5,8 +5,9 @@ import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { useApp } from '@/lib/AppContext'
-import { CheckCircle2, ChefHat, Clock, Truck, PackageCheck, Bike, Map, Utensils, Soup, Hand } from 'lucide-react'
+import { CheckCircle2, ChefHat, Clock, Truck, PackageCheck, Bike, Map, Utensils, Soup, Hand, Sparkles, X } from 'lucide-react'
 
 // Stage definitions are language-agnostic — each has a stable `key` plus the
 // translation `path` under track_stage.<kind>.<key>. Display labels come from
@@ -80,6 +81,7 @@ function OrderTrack() {
   const { t, lang } = useApp()
   const [order, setOrder] = useState(null)
   const [error, setError] = useState(false)
+  const [showReservationPromo, setShowReservationPromo] = useState(true)
 
   const fetchOrder = async () => {
     const res = await fetch(`/api/orders/${params.id}`)
@@ -200,6 +202,65 @@ function OrderTrack() {
               })}
             </ol>
           </Card>
+
+          {/* Subtle Reservation Promotion - Concierge Style */}
+          {showReservationPromo && isDineIn && (
+            <Card className="relative p-6 mb-6 bg-gradient-to-br from-amber-950/30 via-zinc-900/50 to-zinc-900/50 border-amber-500/20 overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-transparent opacity-50" />
+              <button
+                onClick={() => setShowReservationPromo(false)}
+                className="absolute top-3 right-3 p-1 rounded-full hover:bg-zinc-800/50 text-zinc-500 hover:text-zinc-400 transition-colors z-10"
+                aria-label="Dismiss"
+              >
+                <X className="h-4 w-4" />
+              </button>
+              
+              <div className="relative">
+                <div className="flex items-start gap-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center">
+                    <Sparkles className="h-5 w-5 text-amber-400" />
+                  </div>
+                  
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-serif text-xl text-zinc-100 mb-1.5">Planning another visit?</h3>
+                    <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+                      Reserve your next table online anytime for a seamless dining experience.
+                    </p>
+                    
+                    {/* Optional highlights */}
+                    <div className="flex flex-wrap gap-3 mb-5">
+                      <span className="flex items-center gap-1.5 text-xs text-amber-300/90">
+                        <Sparkles className="h-3 w-3" />
+                        Window seating
+                      </span>
+                      <span className="flex items-center gap-1.5 text-xs text-amber-300/90">
+                        <Sparkles className="h-3 w-3" />
+                        Romantic dinners
+                      </span>
+                      <span className="flex items-center gap-1.5 text-xs text-amber-300/90">
+                        <Sparkles className="h-3 w-3" />
+                        Weekend reservations
+                      </span>
+                    </div>
+                    
+                    {/* CTAs */}
+                    <div className="flex flex-wrap gap-3">
+                      <Link href="/reservations">
+                        <Button className="bg-amber-600 hover:bg-amber-500 text-white shadow-lg shadow-amber-500/20 h-9">
+                          Reserve a Table
+                        </Button>
+                      </Link>
+                      <Link href="/reservation-lookup">
+                        <Button variant="ghost" className="text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/50 h-9">
+                          Browse Reservations
+                        </Button>
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* Courier tracking link */}
           {isDelivery && order.courier_tracking_url && (
