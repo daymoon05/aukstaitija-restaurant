@@ -831,6 +831,10 @@ async function handleRoute(request, { params }) {
 
         update.table_id = body.table_id
         update.table_assigned_at = new Date()
+        // Always backfill confirmed_at when assigning a table — assignment
+        // implies confirmation regardless of whether we also stamp a later
+        // status (arrived/checked_in) in the same PUT.
+        if (!reservation.confirmed_at) update.confirmed_at = new Date()
 
         // Assigning a table implies confirmation. Bump status to
         // 'table_assigned' unless an explicit later-stage status is being set
@@ -838,8 +842,6 @@ async function handleRoute(request, { params }) {
         const downstream = ['arrived', 'checked_in', 'completed', 'cancelled', 'no_show']
         if (!body.status || !downstream.includes(body.status)) {
           update.status = 'table_assigned'
-          // Backfill confirmed_at if we are skipping the explicit confirm step
-          if (!reservation.confirmed_at) update.confirmed_at = new Date()
         }
 
         // Instantly mark the new table as reserved
