@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Utensils, Clock, Bell, BellOff, Volume2, LogOut, ArrowLeft,
-  Hand, CheckCircle2, PackageCheck, Flame, ChefHat, Sparkles,
+  Hand, CheckCircle2, PackageCheck, Flame, ChefHat, Sparkles, Plus,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -303,6 +303,11 @@ function WaiterPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Link href="/waiter/new-order">
+              <Button size="sm" className="h-10 bg-gradient-to-b from-amber-300 to-amber-500 hover:from-amber-200 hover:to-amber-400 text-zinc-950 font-semibold border-0 shadow-lg shadow-amber-500/25">
+                <Plus className="h-4 w-4 mr-1.5" /> New Order
+              </Button>
+            </Link>
             <Link href="/kitchen" className="hidden md:block">
               <Button variant="outline" size="sm" className="bg-white/5 border-white/10 text-zinc-200 hover:bg-white/10 hover:text-amber-300">
                 <ChefHat className="h-4 w-4 mr-1" /> Kitchen

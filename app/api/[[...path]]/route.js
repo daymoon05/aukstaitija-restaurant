@@ -547,7 +547,42 @@ async function handleRoute(request, { params }) {
       if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
         return handleCORS(NextResponse.json({ error: 'Items required' }, { status: 400 }))
       }
-      const subtotal = body.items.reduce((s, i) => s + (parseFloat(i.price) * parseInt(i.quantity)), 0)
+
+      // ---- Waiter-assisted dine-in additions --------------------------------
+      // Customers can self-order via the QR/table flow OR a waiter can place
+      // the order on their behalf. Both paths land here so the kitchen
+      // pipeline stays single-source-of-truth.
+      const orderSource = body.order_source === 'waiter' ? 'waiter' : 'qr'
+      const waiterMeta = body.waiter && typeof body.waiter === 'object'
+        ? {
+            id: body.waiter.id || null,
+            name: (body.waiter.name || '').toString().slice(0, 80) || null,
+          }
+        : null
+      // Optional ticket-level flags surfaced to the kitchen / waiter UI.
+      const flags = body.flags && typeof body.flags === 'object'
+        ? {
+            urgent: !!body.flags.urgent,
+            allergy: !!body.flags.allergy,
+            complimentary: !!body.flags.complimentary,
+          }
+        : { urgent: false, allergy: false, complimentary: false }
+      // Default behaviour for waiter dine-in: merge into the table's
+      // most-recent un-accepted order. Customers can opt-out via merge_active=false.
+      const mergeActive = body.merge_active !== false
+      // -----------------------------------------------------------------------
+
+      // Normalise per-item notes coming from the waiter builder so the kitchen
+      // sees the same shape regardless of source.
+      const items = body.items.map(i => ({
+        id: i.id,
+        name: i.name,
+        price: parseFloat(i.price) || 0,
+        quantity: parseInt(i.quantity) || 1,
+        notes: (i.notes || '').toString().slice(0, 240),
+        prep_time: i.prep_time,
+      }))
+      const subtotal = items.reduce((s, i) => s + (i.price * i.quantity), 0)
       const tax = +(subtotal * 0.21).toFixed(2) // 21% VAT Lithuania
 
       // Delivery zone & fee
@@ -572,11 +607,11 @@ async function handleRoute(request, { params }) {
       // Compute prep_time_total = max prep_time across items (kitchen parallel cooking)
       let prepTimeTotal = 0
       try {
-        const dishIds = body.items.map(i => i.id).filter(Boolean)
+        const dishIds = items.map(i => i.id).filter(Boolean)
         if (dishIds.length > 0) {
           const dishDocs = await db.collection('dishes').find({ id: { $in: dishIds } }).toArray()
           const dishPrepMap = Object.fromEntries(dishDocs.map(d => [d.id, parseInt(d.prep_time) || 15]))
-          for (const i of body.items) {
+          for (const i of items) {
             const p = dishPrepMap[i.id] || parseInt(i.prep_time) || 15
             if (p > prepTimeTotal) prepTimeTotal = p
           }
@@ -597,26 +632,96 @@ async function handleRoute(request, { params }) {
           session = {
             id: uuidv4(),
             table_id: body.table_id,
-            customer_name: body.customer?.name || 'Walk-in',
+            customer_name: body.customer?.name || (orderSource === 'waiter' ? 'Walk-in (waiter)' : 'Walk-in'),
             guests: body.guests || 2,
             started_at: new Date(),
             ended_at: null,
             session_status: 'active',
-            origin: 'qr_order',
+            origin: orderSource === 'waiter' ? 'waiter_order' : 'qr_order',
           }
           await db.collection('table_sessions').insertOne(session)
           await setTableStatus(db, body.table_id, 'occupied')
         }
         sessionId = session.id
+
+        // Merge-into-active: append items to the most-recent received order on
+        // this session so the kitchen doesn't get a duplicate ticket while
+        // the previous one is still on the pass. Once the kitchen has accepted
+        // (status >= preparing), we let the new ticket be a fresh row so the
+        // kitchen flow stays clean.
+        if (mergeActive) {
+          const activeOrder = await db.collection('orders').findOne(
+            { session_id: sessionId, status: 'received' },
+            { sort: { created_at: -1 } }
+          )
+          if (activeOrder) {
+            // Merge: increment quantity of identical (id + notes) items, push the rest.
+            const merged = [...(activeOrder.items || [])]
+            for (const it of items) {
+              const idx = merged.findIndex(m =>
+                m.id === it.id && (m.notes || '') === (it.notes || '')
+              )
+              if (idx >= 0) merged[idx].quantity = (parseInt(merged[idx].quantity) || 0) + it.quantity
+              else merged.push(it)
+            }
+            const newSubtotal = merged.reduce((s, i) => s + (parseFloat(i.price) * parseInt(i.quantity)), 0)
+            const newTax = +(newSubtotal * 0.21).toFixed(2)
+            const newDiscount = activeOrder.discount || 0
+            const newTotal = +(newSubtotal + newTax + (activeOrder.delivery_fee || 0) - newDiscount).toFixed(2)
+            const mergedFlags = {
+              urgent: !!(activeOrder.flags?.urgent || flags.urgent),
+              allergy: !!(activeOrder.flags?.allergy || flags.allergy),
+              complimentary: !!(activeOrder.flags?.complimentary || flags.complimentary),
+            }
+            const history = Array.isArray(activeOrder.history) ? activeOrder.history.slice() : []
+            history.push({
+              at: new Date(),
+              action: 'append_items',
+              source: orderSource,
+              waiter: waiterMeta,
+              added_items: items.map(i => ({ id: i.id, name: i.name, quantity: i.quantity, notes: i.notes })),
+            })
+            await db.collection('orders').updateOne(
+              { id: activeOrder.id },
+              {
+                $set: {
+                  items: merged,
+                  subtotal: +newSubtotal.toFixed(2),
+                  tax: newTax,
+                  total: newTotal,
+                  flags: mergedFlags,
+                  history,
+                  updated_at: new Date(),
+                },
+              }
+            )
+            const updated = await db.collection('orders').findOne({ id: activeOrder.id })
+            return handleCORS(NextResponse.json({
+              ...stripId(updated),
+              merged: true,
+              merged_into_order_id: activeOrder.id,
+            }))
+          }
+        }
       }
 
       const order = {
         id: uuidv4(),
         order_number: 'AK' + Date.now().toString().slice(-6),
         user_id: (await currentUser())?.id || null,
-        items: body.items,
+        items,
         type: body.type || (body.table_id ? 'dine-in' : 'pickup'),
         order_type: body.table_id ? 'dine_in' : (body.type === 'delivery' ? 'delivery' : 'pickup'),
+        // Waiter-assisted ordering metadata
+        order_source: orderSource,
+        waiter: waiterMeta,
+        flags,
+        history: [{
+          at: new Date(),
+          action: 'create',
+          source: orderSource,
+          waiter: waiterMeta,
+        }],
         table_id: body.table_id || null,
         table_number: tableNumber,
         session_id: sessionId,
@@ -784,6 +889,99 @@ async function handleRoute(request, { params }) {
       }).sort({ priority: -1, ready_at: 1, created_at: 1 }).toArray()
       return handleCORS(NextResponse.json(orders.map(stripId)))
     }
+
+    // GET /waiter/active-tables (admin) — table picker feed for waiter-assisted
+    // ordering. Returns every table the waiter could plausibly take an order
+    // for, with whatever extra context the UI needs to render rich cards.
+    //
+    // ?include=available  — also include unoccupied/available tables (default
+    //                       false; useful only for the walk-in seating flow).
+    if (route === '/waiter/active-tables' && method === 'GET') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const url = new URL(request.url)
+      const includeAvailable = url.searchParams.get('include') === 'available'
+
+      const tables = await db.collection('tables').find({}).sort({ number: 1 }).toArray()
+      const sessions = await db.collection('table_sessions').find({ session_status: 'active' }).toArray()
+      const sessionByTable = Object.fromEntries(sessions.map(s => [s.table_id, s]))
+
+      // Today's reservations marked arrived but not yet seated — those tables
+      // should appear in the picker even before an active session is created.
+      const restNow = getRestaurantNow()
+      const arrivedRes = await db.collection('reservations').find({
+        date: restNow.dateStr,
+        status: { $in: ['arrived', 'table_assigned'] },
+      }).toArray()
+      const arrivedByTable = {}
+      for (const r of arrivedRes) {
+        if (r.table_id && !arrivedByTable[r.table_id]) arrivedByTable[r.table_id] = r
+      }
+
+      // Active dine-in orders (one per session, latest first) keyed by session
+      // so the picker can show "+ €23.40 already on the bill" or similar.
+      const activeOrders = await db.collection('orders').find({
+        session_id: { $in: sessions.map(s => s.id) },
+        status: { $nin: ['delivered', 'cancelled'] },
+      }).sort({ created_at: -1 }).toArray()
+      const ordersBySession = {}
+      for (const o of activeOrders) {
+        if (!ordersBySession[o.session_id]) ordersBySession[o.session_id] = []
+        ordersBySession[o.session_id].push(o)
+      }
+
+      const result = []
+      for (const t of tables) {
+        if (t.status === 'out_of_service') continue
+        const session = sessionByTable[t.id] || null
+        const reservation = arrivedByTable[t.id] || null
+        const isOccupied = t.status === 'occupied' || !!session
+        const isSeated = !!session
+        const isAvailable = t.status === 'available' && !session && !reservation
+        // Skip available tables unless caller asked for them.
+        if (isAvailable && !includeAvailable) continue
+        // Skip purely-reserved-not-arrived tables; waiter shouldn't take an
+        // order before the guest is here.
+        if (!isOccupied && !reservation && !isAvailable) continue
+
+        const sessionOrders = session ? (ordersBySession[session.id] || []) : []
+        const activeOrder = sessionOrders.find(o => o.status === 'received') || sessionOrders[0] || null
+
+        result.push({
+          id: t.id,
+          number: t.number,
+          capacity: t.capacity,
+          section: t.section,
+          status: t.status,
+          state: isSeated ? 'seated' : (isOccupied ? 'occupied' : (reservation ? 'arrived' : 'available')),
+          session: session ? {
+            id: session.id,
+            customer_name: session.customer_name,
+            guests: session.guests,
+            started_at: session.started_at,
+            origin: session.origin,
+          } : null,
+          reservation: reservation ? {
+            id: reservation.id,
+            name: reservation.name,
+            guests: reservation.guests,
+            time: reservation.time,
+            status: reservation.status,
+          } : null,
+          active_order: activeOrder ? {
+            id: activeOrder.id,
+            order_number: activeOrder.order_number,
+            status: activeOrder.status,
+            total: activeOrder.total,
+            item_count: (activeOrder.items || []).reduce((s, i) => s + (parseInt(i.quantity) || 0), 0),
+            order_source: activeOrder.order_source || 'qr',
+            mergeable: activeOrder.status === 'received',
+          } : null,
+        })
+      }
+
+      return handleCORS(NextResponse.json({ tables: result }))
+    }
+
 
     // GET /waiter/notifications (admin) — primary feed for the waiter dashboard.
     // Returns pending + picked_up notifications, newest at the top of "pending"
