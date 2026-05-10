@@ -215,9 +215,34 @@ function ReservationDashboard({ reservations = [], token, onUpdate }) {
     setAvailableTables([])
   }
 
+  // Calculate attention count (items needing action)
+  const attentionCount = useMemo(() => {
+    return reservations.filter(r => {
+      // No-shows
+      if (r.status === 'no_show') return true
+      
+      // Skip completed and cancelled
+      if (r.status === 'completed' || r.status === 'cancelled') return false
+      
+      // Late arrivals
+      const resTime = new Date(`${r.date}T${r.time}:00`)
+      const isLate = resTime < new Date() && ['pending', 'confirmed', 'table_assigned'].includes(r.status)
+      if (isLate) return true
+      
+      // Unassigned nearing T-30
+      if (!r.table_id && (r.status === 'pending' || r.status === 'confirmed')) {
+        const timer = computeAssignmentTimer(r, now)
+        if (timer.state === 'due' || timer.state === 'overdue') return true
+      }
+      
+      return false
+    }).length
+  }, [reservations, now])
+
   // Filter logic
   const filtered = useMemo(() => {
     const today = new Date().toISOString().split('T')[0]
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     const cutoffNow = new Date()
     
     let result = reservations
@@ -225,15 +250,32 @@ function ReservationDashboard({ reservations = [], token, onUpdate }) {
     if (filter === 'today') {
       result = result.filter(r => r.date === today)
     } else if (filter === 'upcoming') {
-      result = result.filter(r => new Date(r.date) >= cutoffNow)
-    } else if (filter === 'confirmed') {
-      result = result.filter(r => r.status === 'confirmed')
-    } else if (filter === 'pending') {
-      result = result.filter(r => r.status === 'pending')
-    } else if (filter === 'arrived') {
-      result = result.filter(r => r.status === 'arrived')
-    } else if (filter === 'cancelled') {
-      result = result.filter(r => r.status === 'cancelled' || r.status === 'no_show')
+      result = result.filter(r => r.date > today)
+    } else if (filter === 'attention') {
+      // Show reservations needing action:
+      // 1. Unassigned reservations nearing T-30
+      // 2. Late arrivals (confirmed/table_assigned but past reservation time)
+      // 3. No-shows
+      result = result.filter(r => {
+        // No-shows
+        if (r.status === 'no_show') return true
+        
+        // Skip completed and cancelled
+        if (r.status === 'completed' || r.status === 'cancelled') return false
+        
+        // Late arrivals: reservation time has passed but status is still pending/confirmed/table_assigned
+        const resTime = new Date(`${r.date}T${r.time}:00`)
+        const isLate = resTime < new Date() && ['pending', 'confirmed', 'table_assigned'].includes(r.status)
+        if (isLate) return true
+        
+        // Unassigned nearing T-30 (within 60 minutes of assignment deadline)
+        if (!r.table_id && (r.status === 'pending' || r.status === 'confirmed')) {
+          const timer = computeAssignmentTimer(r, now)
+          if (timer.state === 'due' || timer.state === 'overdue') return true
+        }
+        
+        return false
+      })
     }
 
     // ---- Sort -----------------------------------------------------------
@@ -296,15 +338,12 @@ function ReservationDashboard({ reservations = [], token, onUpdate }) {
 
   return (
     <div className="space-y-6">
-      {/* Filters */}
+      {/* Simplified Filter Tabs */}
       <div className="flex flex-wrap gap-2">
         {[
           { key: 'today', label: 'Today', icon: Calendar },
           { key: 'upcoming', label: 'Upcoming', icon: ChevronRight },
-          { key: 'confirmed', label: 'Confirmed', icon: Check },
-          { key: 'pending', label: 'Pending', icon: Clock },
-          { key: 'arrived', label: 'Arrived', icon: UserCheck },
-          { key: 'cancelled', label: 'Cancelled', icon: X },
+          { key: 'attention', label: 'Attention', icon: AlertCircle },
         ].map(f => {
           const Icon = f.icon
           return (
@@ -319,6 +358,11 @@ function ReservationDashboard({ reservations = [], token, onUpdate }) {
             >
               <Icon className="h-4 w-4" />
               <span className="text-sm font-medium">{f.label}</span>
+              {f.key === 'attention' && filter !== 'attention' && attentionCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 bg-red-500 text-white text-xs font-bold rounded-full">
+                  {attentionCount}
+                </span>
+              )}
             </button>
           )
         })}
