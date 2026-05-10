@@ -64,11 +64,39 @@ function ReservationsPage() {
     try { localStorage.removeItem('latest_reservation_code') } catch {}
   }
 
-  useEffect(() => {
-    fetch(`/api/reservations/availability?date=${date}`).then(r => r.json()).then(d => {
-      setSlots(d.slots || [])
+  // Fetches slots for the currently-selected date. Re-callable for the
+  // auto-refresh loop below without disturbing other state.
+  const loadSlots = async (selectedDate) => {
+    try {
+      const res = await fetch(`/api/reservations/availability?date=${selectedDate}`)
+      const d = await res.json()
+      const fresh = d.slots || []
+      setSlots(fresh)
+      // If the user had a slot selected that was just filtered out (because
+      // time passed), drop it so they're forced to pick a still-valid one
+      // before submitting.
+      setTime(prev => (prev && fresh.some(s => s.time === prev) ? prev : ''))
+    } catch {
+      setSlots([])
       setTime('')
-    })
+    }
+  }
+
+  useEffect(() => {
+    loadSlots(date)
+    setTime('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date])
+
+  // Auto-refresh available slots while the page is open so a user who keeps
+  // the form open for a while doesn't see stale (now-past) options. We only
+  // poll for today's date — future dates never need refreshing for this.
+  useEffect(() => {
+    const todayStr = new Date().toISOString().split('T')[0]
+    if (date !== todayStr) return
+    const id = setInterval(() => loadSlots(date), 60_000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date])
 
   const submit = async (e) => {
@@ -76,6 +104,15 @@ function ReservationsPage() {
     if (!time || !form.name || !form.phone) { 
       toast.error('Please complete all required fields')
       return 
+    }
+    // Client-side guard — even if the slot list is stale, refuse to submit a
+    // time that's no longer in the available list. The server enforces this
+    // independently (so a user editing the network request still gets a 400).
+    if (!slots.some(s => s.time === time && s.available > 0)) {
+      toast.error('Please select a valid future reservation time.')
+      // Pull a fresh list so the UI catches up.
+      loadSlots(date)
+      return
     }
     setSubmitting(true)
     try {
@@ -105,7 +142,13 @@ function ReservationsPage() {
           if (data.reservation_code) router.push(`/reservation/${data.reservation_code}`)
         }, 1800)
       } else {
-        toast.error(data.error)
+        toast.error(data.error || 'Could not create reservation')
+        // If the backend specifically rejected the time, refresh slots so the
+        // dead one disappears from the picker.
+        if (typeof data.error === 'string' && data.error.toLowerCase().includes('reservation time')) {
+          loadSlots(date)
+          setTime('')
+        }
       }
     } finally { 
       setSubmitting(false) 
@@ -317,7 +360,11 @@ function ReservationsPage() {
             </Label>
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
               {slots.length === 0 && (
-                <p className="col-span-full text-center text-zinc-500 py-4">Select a date to see available times</p>
+                <p className="col-span-full text-center text-zinc-500 py-4">
+                  {date === today
+                    ? "No more available times today — please pick a future date."
+                    : "Select a date to see available times"}
+                </p>
               )}
               {slots.map(s => (
                 <button 

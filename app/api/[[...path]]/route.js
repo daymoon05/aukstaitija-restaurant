@@ -32,6 +32,46 @@ function isAdmin(request) {
   return token && token === (process.env.ADMIN_PASSWORD || 'admin123')
 }
 
+// ---------- Reservation time validation -----------------------------------
+// All same-day reservation logic is anchored to the restaurant's wall clock
+// (Kaunas, Lithuania) so the server doesn't rely on the container's UTC time
+// when deciding "what is in the past".
+const RESTAURANT_TZ = process.env.RESTAURANT_TIMEZONE || 'Europe/Vilnius'
+const RESERVATION_LEAD_MIN = 30
+
+function getRestaurantNow() {
+  const now = new Date()
+  // en-CA gives ISO-style YYYY-MM-DD
+  const dateStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: RESTAURANT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(now)
+  // en-GB gives 24-hour HH:mm
+  const [hStr, mStr] = new Intl.DateTimeFormat('en-GB', {
+    timeZone: RESTAURANT_TZ, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(now).split(':')
+  const hour = parseInt(hStr, 10) % 24 // some locales emit "24:xx" at midnight
+  const minute = parseInt(mStr, 10)
+  return { dateStr, minutes: hour * 60 + minute }
+}
+
+function timeStrToMinutes(t) {
+  if (!t || typeof t !== 'string') return NaN
+  const [h, m] = t.split(':').map(Number)
+  if (Number.isNaN(h) || Number.isNaN(m)) return NaN
+  return h * 60 + m
+}
+
+// Returns true if the given reservation date/time slot is in the past or
+// inside the lead-time buffer (default 30 min) — i.e. cannot be booked.
+function isPastReservationSlot(date, time, restNow = getRestaurantNow()) {
+  if (!date || !time) return true
+  if (date < restNow.dateStr) return true
+  if (date > restNow.dateStr) return false
+  const slotMin = timeStrToMinutes(time)
+  if (Number.isNaN(slotMin)) return true
+  return slotMin < restNow.minutes + RESERVATION_LEAD_MIN
+}
+
 async function ensureSeeded(db) {
   const dishCount = await db.collection('dishes').countDocuments()
   if (dishCount === 0) {
@@ -791,6 +831,15 @@ async function handleRoute(request, { params }) {
       if (!body.date || !body.time || !body.guests || !body.name) {
         return handleCORS(NextResponse.json({ error: 'date, time, guests, name required' }, { status: 400 }))
       }
+
+      // Reject past or sub-lead-time slots (defence in depth — UI also hides them).
+      if (isPastReservationSlot(body.date, body.time)) {
+        return handleCORS(NextResponse.json(
+          { error: 'Please select a valid future reservation time.' },
+          { status: 400 }
+        ))
+      }
+
       // Check capacity for that slot
       const existing = await db.collection('reservations').find({
         date: body.date,
@@ -903,16 +952,35 @@ async function handleRoute(request, { params }) {
         date,
         status: { $ne: 'cancelled' }
       }).toArray()
+      const restNow = getRestaurantNow()
+      const isToday = date === restNow.dateStr
+      const isPast = date < restNow.dateStr
       const slots = []
       for (let h = 12; h <= 22; h++) {
         for (const m of [0, 30]) {
           if (h === 22 && m === 30) continue
           const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+          // Hide all past time slots — same-day-future-only logic with a
+          // 30-minute lead-time buffer. Future dates get every slot.
+          if (isPast) continue
+          if (isToday && timeStrToMinutes(time) < restNow.minutes + RESERVATION_LEAD_MIN) continue
           const booked = reservations.filter(r => r.time === time).length
           slots.push({ time, available: totalTables - booked, total: totalTables })
         }
       }
-      return handleCORS(NextResponse.json({ date, slots, total_tables: totalTables }))
+      return handleCORS(NextResponse.json({
+        date,
+        slots,
+        total_tables: totalTables,
+        // Surface server's notion of "now" + lead-time so the client can
+        // double-check / auto-refresh without re-implementing TZ logic.
+        server_now: {
+          date: restNow.dateStr,
+          time: `${String(Math.floor(restNow.minutes / 60)).padStart(2, '0')}:${String(restNow.minutes % 60).padStart(2, '0')}`,
+          timezone: RESTAURANT_TZ,
+          lead_time_minutes: RESERVATION_LEAD_MIN,
+        },
+      }))
     }
 
     // GET /reservations (admin)

@@ -103,7 +103,201 @@
 #====================================================================================================
 
 user_problem_statement: |
-  Simplify the customer reservation tracker:
+  Fix reservation time validation:
+  - Same-day future-only logic: if date == today, hide all past time slots.
+  - Lead-time buffer: minimum 30 minutes ahead (e.g. 19:45 → earliest 20:15+).
+  - Submit-side validation: reject past/sub-buffer/invalid times even if
+    the user manipulates input. Error message: "Please select a valid future
+    reservation time."
+  - Future dates: show all normal slots.
+  - Auto-refresh available slots while page is open so they stay accurate.
+
+backend:
+  - task: "Same-day future-only slot filtering with 30-min lead time"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            Added timezone-aware helper getRestaurantNow() (default
+            'Europe/Vilnius', overridable via RESTAURANT_TIMEZONE env) and
+            isPastReservationSlot() with a 30-min lead-time buffer
+            (RESERVATION_LEAD_MIN).
+            • GET /api/reservations/availability now omits past slots and slots
+              inside the 30-min buffer for today, returns all slots for future
+              dates, and surfaces a `server_now` block (date, time, timezone,
+              lead_time_minutes) so the client can corroborate.
+            • POST /api/reservations validates the slot and returns 400
+              { error: "Please select a valid future reservation time." } for
+              past dates, today's past times, and times inside the lead buffer.
+            Manual smoke checks pass: at restaurant-now 19:46, today's slots
+            start at 20:30 (20:00 inside the 30-min buffer correctly hidden);
+            future date returns all 21 slots; POST rejects past/yesterday/
+            inside-buffer with the exact required error string.
+        - working: true
+          agent: "testing"
+          comment: |
+            ✅ PASS - All reservation time validation tests passed (11/11 - 100% success rate)
+            
+            **TEST RESULTS:**
+            
+            1. **server_now block verification (1/1):**
+               ✅ GET /api/reservations/availability returns server_now with all required fields
+               ✅ date: 2026-05-10 (YYYY-MM-DD format)
+               ✅ time: 19:50 (HH:MM format)
+               ✅ timezone: 'Europe/Vilnius' (correct)
+               ✅ lead_time_minutes: 30 (correct)
+            
+            2. **Future date returns full slot grid (1/1):**
+               ✅ Date 3 days in future returns exactly 21 slots
+               ✅ First slot: 12:00 (present)
+               ✅ Last slot: 22:00 (present)
+               ✅ 22:30 NOT present (correct - slots end at 22:00)
+            
+            3. **Past date returns empty (1/1):**
+               ✅ Date 3 days in past returns empty slots array
+            
+            4. **Today lead-time filtering (1/1):**
+               ✅ At restaurant time 19:50, earliest slot is 20:30 (19:50 + 30 min = 20:20, rounded to next 30-min slot)
+               ✅ No slots with time < 20:20 (all past slots correctly filtered)
+               ✅ Total slots available: 4 (20:30, 21:00, 21:30, 22:00)
+            
+            5. **POST validation - past date (1/1):**
+               ✅ POST with date=yesterday returns HTTP 400
+               ✅ Error message exactly: "Please select a valid future reservation time."
+            
+            6. **POST validation - today inside lead buffer (1/1):**
+               ✅ POST with date=today, time=19:50 (within 30-min buffer) returns HTTP 400
+               ✅ Error message exactly: "Please select a valid future reservation time."
+            
+            7. **POST validation - today well in past (1/1):**
+               ✅ POST with date=today, time=06:00 returns HTTP 400
+               ✅ Error message exactly: "Please select a valid future reservation time."
+            
+            8. **POST validation - valid future date (1/1):**
+               ✅ POST with date=+3 days, time=19:00 returns HTTP 200
+               ✅ Response contains id field
+               ✅ Response contains reservation_code starting with "RSV-"
+            
+            9. **POST validation - valid today (1/1):**
+               ✅ POST with date=today, time=20:30 (first available slot) returns HTTP 200
+               ✅ Response contains id and reservation_code
+            
+            10. **Required-fields regression (1/1):**
+                ✅ POST missing name returns HTTP 400
+                ✅ Error message contains "required"
+            
+            11. **Capacity regression (1/1):**
+                ✅ Total tables: 10
+                ✅ After creating 1 reservation at 18:00, available count decreased to 9
+                ✅ Capacity tracking working correctly
+            
+            **CRITICAL VERIFICATIONS:**
+            ✅ server_now block provides accurate restaurant time in Europe/Vilnius timezone
+            ✅ Future dates return all 21 slots (12:00 to 22:00 in 30-min steps)
+            ✅ Past dates return empty slots array
+            ✅ Today's slots correctly filtered with 30-min lead time buffer
+            ✅ POST validation rejects past dates with exact error message
+            ✅ POST validation rejects times within lead buffer with exact error message
+            ✅ POST validation accepts valid future dates and times
+            ✅ Required fields validation still working (no regression)
+            ✅ Capacity tracking still working (no regression)
+            
+            **TEST FILE:** /app/backend_test_reservation_time_validation.py
+            
+            All reservation time validation features are working correctly and ready for production. No issues found.
+
+frontend:
+  - task: "Hide past slots & auto-refresh; surface backend rejection on submit"
+    implemented: true
+    working: true
+    file: "app/reservations/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            • Slots refresh every 60 s while date == today so the picker stays
+              accurate as time passes.
+            • If the user's previously-picked time is filtered out by a refresh
+              (because it just slipped into the past), the selection is cleared
+              automatically.
+            • Pre-submit guard: refuses to POST when the chosen time is no
+              longer in the available list and triggers an immediate slot
+              refresh.
+            • Backend rejection ("Please select a valid future reservation
+              time.") is surfaced as a toast and triggers a slot refresh +
+              clears the selected time.
+            • Empty-slot placeholder updated for today: "No more available
+              times today — please pick a future date."
+            Visually verified at 19:46 restaurant time: only 20:30 / 21:00 /
+            21:30 / 22:00 shown.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Reservation time validation hardened end-to-end. Backend uses a
+        restaurant-timezone-anchored "now" so the validation is correct
+        regardless of the container's UTC clock. Please verify:
+          1. GET /api/reservations/availability?date=<today> hides past slots
+             AND slots within 30 min of the restaurant's current time, and
+             includes a `server_now` block.
+          2. GET /api/reservations/availability?date=<future> returns the full
+             slot grid (21 slots: 12:00 → 22:00 in 30-min steps).
+          3. GET /api/reservations/availability?date=<yesterday> returns an
+             empty `slots` array.
+          4. POST /api/reservations with date=yesterday → 400, error string
+             exactly "Please select a valid future reservation time."
+          5. POST /api/reservations with date=today, time = something a few
+             minutes from now (inside the 30-min buffer) → same 400/error.
+          6. POST /api/reservations with date=today, time well past now → same
+             400/error.
+          7. POST /api/reservations with date=<future> + valid time → success.
+          8. Existing capacity / required-fields validation still works.
+    - agent: "testing"
+      message: |
+        ✅ BACKEND TESTING COMPLETE - Reservation time validation fully tested and working
+        
+        **TEST EXECUTION:**
+        - Created comprehensive test suite: /app/backend_test_reservation_time_validation.py
+        - Executed 11 test scenarios covering all validation features
+        - All tests passed (100% success rate)
+        
+        **VERIFIED FEATURES:**
+        ✅ server_now block: Returns accurate restaurant time (Europe/Vilnius), date, time, timezone, lead_time_minutes=30
+        ✅ Future dates: Return full slot grid (21 slots: 12:00 to 22:00 in 30-min steps)
+        ✅ Past dates: Return empty slots array
+        ✅ Today lead-time filtering: Correctly filters slots within 30-min buffer (at 19:50, earliest slot is 20:30)
+        ✅ POST validation - past date: Returns 400 with exact error message
+        ✅ POST validation - today inside buffer: Returns 400 with exact error message
+        ✅ POST validation - today well in past: Returns 400 with exact error message
+        ✅ POST validation - valid future: Returns 200 with id and reservation_code (RSV-XXXXXX)
+        ✅ POST validation - valid today: Returns 200 for first available slot
+        ✅ Required fields regression: Still returns 400 for missing fields
+        ✅ Capacity regression: Correctly tracks available tables per slot
+        
+        **CRITICAL VERIFICATIONS:**
+        ✅ Timezone-aware validation using Europe/Vilnius (not container UTC)
+        ✅ 30-minute lead time buffer correctly enforced
+        ✅ Error message exactly matches: "Please select a valid future reservation time."
+        ✅ server_now block provides all required fields for client-side validation
+        ✅ No regressions in existing validation (required fields, capacity)
+        
+        **NO ISSUES FOUND:**
+        All reservation time validation features are working correctly. The backend is production-ready.
+
+#====================================================================================================
+# Testing Data - Main Agent and testing sub agent both should log testing data below this section
+#====================================================================================================
+
+user_problem_statement: |
   - Reduce timeline to 3 customer-visible stages: Pending, Confirmed, Table Assigned.
     Remove arrived / checked-in / completed timeline steps from the customer view.
   - Status messages:
