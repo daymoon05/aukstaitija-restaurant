@@ -162,17 +162,28 @@ function FloorPage() {
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-3">
               {ts.map(t => {
                 const s = STATUS[t.status] || STATUS.available
+                const isReserved = t.status === 'reserved' && t.upcoming_reservation
                 return (
                   <div key={t.id} className="relative group">
                     <button
                       onClick={() => openTable(t)}
-                      className={`w-full aspect-square p-3 rounded-lg border-2 text-left transition hover:scale-[1.02] ${s.tile}`}
+                      className={`w-full aspect-square p-3 rounded-lg border-2 text-left transition hover:scale-[1.02] ${s.tile} ${isReserved ? 'shadow-lg shadow-sky-500/20' : ''}`}
                     >
                       <div className="flex flex-col h-full">
                         <p className="font-serif text-3xl leading-none">T{t.number}</p>
                         <div className="flex items-center gap-1 text-xs mt-1 opacity-80">
                           <Users className="h-3 w-3" /> {t.capacity}
                         </div>
+                        
+                        {/* Show reservation details if reserved */}
+                        {isReserved && (
+                          <div className="mt-2 space-y-0.5 border-t border-current pt-1.5">
+                            <p className="text-[10px] font-semibold truncate">{t.upcoming_reservation.name}</p>
+                            <p className="text-[9px] opacity-70">{t.upcoming_reservation.time}</p>
+                            <p className="text-[9px] opacity-70">{t.upcoming_reservation.guests}👤</p>
+                          </div>
+                        )}
+                        
                         <div className="mt-auto pt-1">
                           <p className="text-[10px] uppercase tracking-wider opacity-80">{s.label}</p>
                         </div>
@@ -182,9 +193,6 @@ function FloorPage() {
                       <span className="absolute -top-2 -right-2 bg-primary text-primary-foreground rounded-full text-xs w-6 h-6 flex items-center justify-center font-bold shadow">
                         {t.active_orders}
                       </span>
-                    )}
-                    {t.upcoming_reservation && t.status === 'reserved' && !editMode && (
-                      <span className="absolute top-2 right-2 text-[9px] bg-sky-500 text-white px-1.5 py-0.5 rounded uppercase tracking-wider">{t.upcoming_reservation.time}</span>
                     )}
                     {editMode && (
                       <button
@@ -252,10 +260,42 @@ function FloorPage() {
               </div>
             )}
 
-            {selected.upcoming_reservations?.length > 0 && (
+            {selected.upcoming_reservation && selected.status === 'reserved' && (
+              <div className="p-4 mb-4 rounded-lg bg-gradient-to-br from-sky-50 to-blue-50 dark:from-sky-500/10 dark:to-blue-500/5 border border-sky-200 dark:border-sky-500/30 shadow-lg">
+                <p className="text-xs uppercase tracking-wider text-sky-600 dark:text-sky-400 mb-2 flex items-center gap-1">
+                  <CalendarDays className="h-3 w-3" /> Reserved for
+                </p>
+                <p className="font-serif text-2xl text-zinc-900 dark:text-zinc-100">{selected.upcoming_reservation.name}</p>
+                <div className="mt-2 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
+                  <p>{selected.upcoming_reservation.date} at {selected.upcoming_reservation.time}</p>
+                  <p className="flex items-center gap-2">
+                    <Users className="h-3.5 w-3.5" /> {selected.upcoming_reservation.guests} guests
+                  </p>
+                  {selected.upcoming_reservation.seating_preference && (
+                    <p className="flex items-center gap-2">
+                      <MapPin className="h-3.5 w-3.5" /> {selected.upcoming_reservation.seating_preference}
+                    </p>
+                  )}
+                  {selected.upcoming_reservation.occasion && (
+                    <p className="flex items-center gap-2 text-xs">
+                      <span className="px-2 py-0.5 bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded-full">
+                        {selected.upcoming_reservation.occasion}
+                      </span>
+                    </p>
+                  )}
+                  {(selected.upcoming_reservation.special_requests || selected.upcoming_reservation.notes) && (
+                    <p className="text-xs italic pt-1 border-t border-sky-200 dark:border-sky-500/20 mt-2">
+                      "{selected.upcoming_reservation.special_requests || selected.upcoming_reservation.notes}"
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {selected.upcoming_reservations?.length > 1 && (
               <div className="p-4 mb-4 rounded-lg bg-sky-50 dark:bg-sky-500/5 border border-sky-200 dark:border-sky-500/30">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-2">Upcoming reservations</p>
-                {selected.upcoming_reservations.map(r => (
+                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-2">Other upcoming reservations</p>
+                {selected.upcoming_reservations.slice(1).map(r => (
                   <div key={r.id} className="text-sm py-1 flex justify-between">
                     <span>{r.date} {r.time} · {r.name}</span>
                     <span className="text-muted-foreground">{r.guests}p</span>
@@ -281,9 +321,17 @@ function FloorPage() {
               {selected.status === 'cleaning' && (
                 <Button onClick={() => action(selected.id, 'cleaned')} className="col-span-2 h-11 bg-emerald-600 hover:bg-emerald-700"><Brush className="h-4 w-4 mr-1" /> Cleaning Complete</Button>
               )}
-              {selected.status === 'reserved' && selected.upcoming_reservations?.[0] && (
-                <Button onClick={async () => { await adminFetch(`/api/reservations/${selected.upcoming_reservations[0].id}/checkin`, { method: 'POST', body: JSON.stringify({ table_id: selected.id }) }); load(); setSelected(null); toast.success('Checked in') }} className="col-span-2 h-11 bg-sky-600 hover:bg-sky-700">
-                  <CheckCircle2 className="h-4 w-4 mr-1" /> Check-in {selected.upcoming_reservations[0].name}
+              {selected.status === 'reserved' && selected.upcoming_reservation && (
+                <Button onClick={async () => { 
+                  await adminFetch(`/api/reservations/${selected.upcoming_reservation.id}/checkin`, { 
+                    method: 'POST', 
+                    body: JSON.stringify({ table_id: selected.id }) 
+                  })
+                  load()
+                  setSelected(null)
+                  toast.success('Checked in') 
+                }} className="col-span-2 h-11 bg-sky-600 hover:bg-sky-700">
+                  <CheckCircle2 className="h-4 w-4 mr-1" /> Check-in {selected.upcoming_reservation.name}
                 </Button>
               )}
               {selected.status === 'out_of_service' && (

@@ -1,0 +1,416 @@
+'use client'
+import { useState, useMemo } from 'react'
+import Link from 'next/link'
+import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { 
+  Calendar, Users, Clock, MapPin, DoorClosed, Home, Volume2, LogIn, Sparkles,
+  Heart, Briefcase, Gift, UtensilsCrossed, Wine, PartyPopper, Check, X, 
+  UserCheck, Table as TableIcon, AlertCircle, ChevronRight, TrendingUp
+} from 'lucide-react'
+import { toast } from 'sonner'
+
+const SEATING_ICONS = {
+  'Window side': MapPin,
+  'Main hall': Home,
+  'Private room': DoorClosed,
+  'Quiet area': Volume2,
+  'Near entrance': LogIn,
+  'No preference': Sparkles,
+}
+
+const OCCASION_ICONS = {
+  'Casual dining': UtensilsCrossed,
+  'Romantic dinner': Heart,
+  'Business meeting': Briefcase,
+  'Birthday celebration': Gift,
+  'Anniversary': Wine,
+  'Special event': PartyPopper,
+}
+
+const STATUS_STYLES = {
+  pending: { bg: 'bg-amber-500/20', text: 'text-amber-400', border: 'border-amber-500/30', label: 'Pending' },
+  confirmed: { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-500/30', label: 'Confirmed' },
+  arrived: { bg: 'bg-purple-500/20', text: 'text-purple-400', border: 'border-purple-500/30', label: 'Arrived' },
+  checked_in: { bg: 'bg-rose-500/20', text: 'text-rose-400', border: 'border-rose-500/30', label: 'Seated' },
+  completed: { bg: 'bg-emerald-500/20', text: 'text-emerald-400', border: 'border-emerald-500/30', label: 'Completed' },
+  cancelled: { bg: 'bg-zinc-500/20', text: 'text-zinc-500', border: 'border-zinc-500/30', label: 'Cancelled' },
+  no_show: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-500/30', label: 'No-show' },
+}
+
+function ReservationDashboard({ reservations = [], token, onUpdate }) {
+  const [filter, setFilter] = useState('today')
+  const [assigningTable, setAssigningTable] = useState(null)
+  const [availableTables, setAvailableTables] = useState([])
+
+  const adminFetch = async (url, options = {}) => {
+    const res = await fetch(url, { 
+      ...options, 
+      headers: { ...(options.headers || {}), 'x-admin-token': token, 'Content-Type': 'application/json' } 
+    })
+    return res.json()
+  }
+
+  const updateReservation = async (id, updates) => {
+    try {
+      const res = await adminFetch(`/api/reservations/${id}`, { 
+        method: 'PUT', 
+        body: JSON.stringify(updates) 
+      })
+      if (res.error) {
+        toast.error(res.error)
+      } else {
+        toast.success('Reservation updated')
+        onUpdate()
+      }
+    } catch (err) {
+      toast.error('Update failed')
+    }
+  }
+
+  const openAssignTable = async (reservation) => {
+    setAssigningTable(reservation)
+    const data = await adminFetch(`/api/reservations/${reservation.id}/available-tables`)
+    setAvailableTables(data.available || [])
+  }
+
+  const assignTable = async (tableId) => {
+    await updateReservation(assigningTable.id, { table_id: tableId, status: 'confirmed' })
+    setAssigningTable(null)
+    setAvailableTables([])
+  }
+
+  // Filter logic
+  const filtered = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0]
+    const now = new Date()
+    
+    let result = reservations
+
+    if (filter === 'today') {
+      result = result.filter(r => r.date === today)
+    } else if (filter === 'upcoming') {
+      result = result.filter(r => new Date(r.date) >= now)
+    } else if (filter === 'confirmed') {
+      result = result.filter(r => r.status === 'confirmed')
+    } else if (filter === 'pending') {
+      result = result.filter(r => r.status === 'pending')
+    } else if (filter === 'arrived') {
+      result = result.filter(r => r.status === 'arrived')
+    } else if (filter === 'cancelled') {
+      result = result.filter(r => r.status === 'cancelled' || r.status === 'no_show')
+    }
+
+    return result.sort((a, b) => {
+      const dateA = new Date(`${a.date}T${a.time}`)
+      const dateB = new Date(`${b.date}T${b.time}`)
+      return dateA - dateB
+    })
+  }, [reservations, filter])
+
+  // Group by time for timeline view
+  const timeline = useMemo(() => {
+    const groups = {}
+    filtered.forEach(r => {
+      const key = `${r.date} ${r.time}`
+      if (!groups[key]) groups[key] = []
+      groups[key].push(r)
+    })
+    return Object.entries(groups).map(([key, items]) => ({ key, items }))
+  }, [filtered])
+
+  // Occupancy predictor
+  const occupancy = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0]
+    const todayReservations = reservations.filter(r => 
+      r.date === today && !['cancelled', 'no_show', 'completed'].includes(r.status)
+    )
+    
+    const byHour = {}
+    todayReservations.forEach(r => {
+      const hour = r.time.split(':')[0]
+      byHour[hour] = (byHour[hour] || 0) + 1
+    })
+    
+    return Object.entries(byHour)
+      .map(([hour, count]) => ({ hour: `${hour}:00`, count }))
+      .sort((a, b) => a.hour.localeCompare(b.hour))
+  }, [reservations])
+
+  return (
+    <div className="space-y-6">
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2">
+        {[
+          { key: 'today', label: 'Today', icon: Calendar },
+          { key: 'upcoming', label: 'Upcoming', icon: ChevronRight },
+          { key: 'confirmed', label: 'Confirmed', icon: Check },
+          { key: 'pending', label: 'Pending', icon: Clock },
+          { key: 'arrived', label: 'Arrived', icon: UserCheck },
+          { key: 'cancelled', label: 'Cancelled', icon: X },
+        ].map(f => {
+          const Icon = f.icon
+          return (
+            <button
+              key={f.key}
+              onClick={() => setFilter(f.key)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all ${
+                filter === f.key
+                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-400'
+                  : 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:border-zinc-600'
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              <span className="text-sm font-medium">{f.label}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Occupancy Predictor */}
+      {filter === 'today' && occupancy.length > 0 && (
+        <Card className="p-6 bg-gradient-to-br from-amber-500/10 to-amber-600/5 border-amber-500/30">
+          <div className="flex items-center gap-3 mb-4">
+            <TrendingUp className="h-5 w-5 text-amber-400" />
+            <h3 className="font-semibold text-amber-100">Today's Occupancy Forecast</h3>
+          </div>
+          <div className="flex flex-wrap gap-4">
+            {occupancy.map(slot => (
+              <div key={slot.hour} className="flex flex-col items-center">
+                <div className="text-2xl font-bold text-amber-400">{slot.count}</div>
+                <div className="text-xs text-zinc-400">{slot.hour}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Timeline View */}
+      {filtered.length === 0 && (
+        <Card className="p-12 bg-zinc-900/30 border-zinc-800 text-center">
+          <AlertCircle className="h-12 w-12 text-zinc-600 mx-auto mb-3" />
+          <p className="text-zinc-500">No reservations found for this filter</p>
+        </Card>
+      )}
+
+      {timeline.map(({ key, items }) => (
+        <div key={key} className="space-y-3">
+          <div className="flex items-center gap-3 px-2">
+            <Clock className="h-4 w-4 text-amber-400" />
+            <h3 className="text-sm font-semibold text-zinc-300 uppercase tracking-wider">{key}</h3>
+            <div className="flex-1 h-px bg-zinc-800"></div>
+            <span className="text-xs text-zinc-500">{items.length} booking{items.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          <div className="grid gap-4">
+            {items.map(r => {
+              const status = STATUS_STYLES[r.status] || STATUS_STYLES.pending
+              const SeatingIcon = SEATING_ICONS[r.seating_preference] || Sparkles
+              const OccasionIcon = OCCASION_ICONS[r.occasion] || UtensilsCrossed
+
+              return (
+                <Card key={r.id} className={`p-6 bg-zinc-900/50 border-zinc-800 hover:border-zinc-700 transition-all group`}>
+                  <div className="flex flex-col lg:flex-row gap-6">
+                    {/* Left: Customer Info */}
+                    <div className="flex-1 space-y-3">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="flex items-center gap-3 mb-2">
+                            <h3 className="text-xl font-semibold text-zinc-100">{r.name}</h3>
+                            <span className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border ${status.bg} ${status.text} ${status.border}`}>
+                              {status.label}
+                            </span>
+                          </div>
+                          <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">#{r.confirmation}</p>
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-400">
+                            <span className="flex items-center gap-1.5">
+                              <Users className="h-3.5 w-3.5 text-amber-400" />
+                              {r.guests} {r.guests === 1 ? 'guest' : 'guests'}
+                            </span>
+                            {r.phone && (
+                              <span className="flex items-center gap-1.5">
+                                <span className="text-amber-400">•</span>
+                                {r.phone}
+                              </span>
+                            )}
+                            {r.email && (
+                              <span className="flex items-center gap-1.5">
+                                <span className="text-amber-400">•</span>
+                                {r.email}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        
+                        {r.table_id && (
+                          <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                            <div className="flex items-center gap-2">
+                              <TableIcon className="h-4 w-4 text-amber-400" />
+                              <span className="font-mono text-sm text-amber-300">Table {r.table_id.replace('t', '')}</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap gap-4">
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800/50 rounded-lg">
+                          <SeatingIcon className="h-4 w-4 text-amber-400" />
+                          <span className="text-sm text-zinc-300">{r.seating_preference}</span>
+                        </div>
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800/50 rounded-lg">
+                          <OccasionIcon className="h-4 w-4 text-amber-400" />
+                          <span className="text-sm text-zinc-300">{r.occasion}</span>
+                        </div>
+                      </div>
+
+                      {(r.special_requests || r.notes) && (
+                        <div className="pt-2 border-t border-zinc-800">
+                          <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Notes</p>
+                          <p className="text-sm text-zinc-400 italic">"{r.special_requests || r.notes}"</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right: Actions */}
+                    <div className="flex flex-col gap-2 lg:min-w-[200px]">
+                      {!r.table_id && r.status !== 'cancelled' && r.status !== 'no_show' && (
+                        <Button 
+                          size="sm" 
+                          onClick={() => openAssignTable(r)}
+                          className="bg-amber-600 hover:bg-amber-500 text-white"
+                        >
+                          <TableIcon className="h-4 w-4 mr-2" />
+                          Assign Table
+                        </Button>
+                      )}
+
+                      {r.status === 'pending' && (
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          onClick={() => updateReservation(r.id, { status: 'confirmed' })}
+                          className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+                        >
+                          <Check className="h-4 w-4 mr-2" />
+                          Confirm
+                        </Button>
+                      )}
+
+                      {r.status === 'confirmed' && (
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          onClick={() => updateReservation(r.id, { status: 'arrived' })}
+                          className="border-purple-500/50 text-purple-400 hover:bg-purple-500/10"
+                        >
+                          <UserCheck className="h-4 w-4 mr-2" />
+                          Mark Arrived
+                        </Button>
+                      )}
+
+                      {r.status === 'arrived' && r.table_id && (
+                        <Link href="/admin/floor">
+                          <Button 
+                            size="sm" 
+                            className="w-full bg-rose-600 hover:bg-rose-500 text-white"
+                          >
+                            <TableIcon className="h-4 w-4 mr-2" />
+                            Seat Guest
+                          </Button>
+                        </Link>
+                      )}
+
+                      {!['cancelled', 'no_show', 'completed'].includes(r.status) && (
+                        <>
+                          <Button 
+                            size="sm" 
+                            variant="outline"
+                            onClick={() => updateReservation(r.id, { status: 'no_show' })}
+                            className="border-zinc-700 text-zinc-400 hover:bg-zinc-800"
+                          >
+                            No-show
+                          </Button>
+                          <Button 
+                            size="sm" 
+                            variant="outline"
+                            onClick={() => updateReservation(r.id, { status: 'cancelled' })}
+                            className="border-zinc-700 text-zinc-400 hover:bg-zinc-800"
+                          >
+                            <X className="h-4 w-4 mr-2" />
+                            Cancel
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+
+      {/* Assign Table Modal */}
+      {assigningTable && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-zinc-900 border-zinc-800 p-6">
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <h3 className="text-2xl font-serif text-zinc-100">Assign Table</h3>
+                <p className="text-sm text-zinc-400 mt-1">
+                  {assigningTable.name} • {assigningTable.guests} guests • {assigningTable.seating_preference}
+                </p>
+              </div>
+              <button 
+                onClick={() => { setAssigningTable(null); setAvailableTables([]) }}
+                className="p-2 hover:bg-zinc-800 rounded-lg transition"
+              >
+                <X className="h-5 w-5 text-zinc-400" />
+              </button>
+            </div>
+
+            {availableTables.length === 0 && (
+              <div className="text-center py-12">
+                <AlertCircle className="h-12 w-12 text-zinc-600 mx-auto mb-3" />
+                <p className="text-zinc-500">No available tables for this time slot</p>
+              </div>
+            )}
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              {availableTables.map(table => (
+                <button
+                  key={table.id}
+                  onClick={() => assignTable(table.id)}
+                  className="p-4 bg-zinc-800/50 hover:bg-zinc-800 border border-zinc-700 hover:border-amber-500/50 rounded-xl transition-all text-left group"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-lg font-semibold text-zinc-100">Table {table.number}</span>
+                    <span className={`text-xs px-2 py-1 rounded-full ${
+                      table.status === 'available' 
+                        ? 'bg-emerald-500/20 text-emerald-400' 
+                        : 'bg-amber-500/20 text-amber-400'
+                    }`}>
+                      {table.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-4 text-sm text-zinc-400">
+                    <span className="flex items-center gap-1">
+                      <Users className="h-3.5 w-3.5" />
+                      {table.capacity}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <MapPin className="h-3.5 w-3.5" />
+                      {table.section}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default ReservationDashboard

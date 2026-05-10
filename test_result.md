@@ -173,9 +173,9 @@ backend:
 
   - task: "Reservations API (POST, GET availability, GET list admin, PUT)"
     implemented: true
-    working: true
+    working: false
     file: "app/api/[[...path]]/route.js"
-    stuck_count: 0
+    stuck_count: 1
     priority: "high"
     needs_retesting: false
     status_history:
@@ -185,6 +185,39 @@ backend:
         - working: true
           agent: "testing"
           comment: "✅ PASS - POST creates reservation with confirmation field (RES prefix). GET availability shows correct slot data (19:00 has 9 available after 1 booking). Double-booking prevention works: 10 reservations succeed, 11th returns 409 'Slot fully booked'. GET list requires admin token. PUT status update works."
+        - working: false
+          agent: "testing"
+          comment: |
+            ❌ CRITICAL ISSUE - Upgraded reservation system tested with new fields (seating_preference, occasion, notes) and table assignment features. Test results: 3/7 passed (42.9% success rate).
+            
+            **WORKING FEATURES (3/7):**
+            ✅ Test 1: Basic Reservation Creation - All new fields (seating_preference, occasion, notes) stored correctly, confirmation code generated, status='pending', table_id=null
+            ✅ Test 2: Double-Booking Prevention - Correctly prevents assigning same table to multiple reservations at same time slot, returns 409 conflict error
+            ✅ Test 6: Available Tables Endpoint - GET /api/reservations/:id/available-tables returns correct available/suggested tables, excludes conflicting tables, filters by capacity
+            
+            **FAILING FEATURES (4/7):**
+            ❌ Test 3: Table Assignment and Instant Status Sync - Table assignment works but status does NOT sync to 'reserved' for far-future reservations
+            ❌ Test 4: Arrival Status Handling - Cannot verify arrival flow because table status not syncing
+            ❌ Test 5: Cancellation and Table Release - Cannot verify cancellation flow because table status not syncing
+            ❌ Test 7: Multiple Reservations Same Time - Table assignments work but statuses not syncing to 'reserved'
+            
+            **ROOT CAUSE IDENTIFIED:**
+            The autoUpdateTableStatuses() function (lines 84-116 in route.js) only marks tables as 'reserved' for reservations within 2 hours (line 103: `if (diff > -30 * 60 * 1000 && diff <= 2 * 60 * 60 * 1000)`). For far-future reservations, it resets the status to 'available' (line 113), overriding the instant sync set by PUT /api/reservations/:id (line 706).
+            
+            **VERIFICATION:**
+            - Near-future reservation (within 2 hours): Table status syncs to 'reserved' ✅
+            - Far-future reservation (beyond 2 hours): Table status remains 'available' ❌
+            
+            **IMPACT:**
+            - Instant table status sync feature does NOT work for reservations beyond 2 hours
+            - Tables only show as 'reserved' when reservation is within 2-hour window
+            - This breaks the expected behavior described in review request: "Instant table status sync when assigning/releasing tables"
+            
+            **REQUIRED FIX:**
+            Modify autoUpdateTableStatuses() to NOT override manually assigned table statuses. When a table has an assigned reservation (table_id is set), it should remain 'reserved' regardless of how far in the future the reservation is. Only reset to 'available' if:
+            1. No active session AND
+            2. No assigned reservations with status in ['pending', 'confirmed', 'arrived'] OR
+            3. All assigned reservations are cancelled/no-show/completed
 
   - task: "Admin login (POST /api/admin/login)"
     implemented: true
@@ -993,13 +1026,14 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 5
+  test_sequence: 6
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Auto waiter notifications (collection + endpoints + auto-create on order ready)"
-  stuck_tasks: []
+    - "Reservations API (POST, GET availability, GET list admin, PUT)"
+  stuck_tasks:
+    - "Reservations API (POST, GET availability, GET list admin, PUT)"
   test_all: false
   test_priority: "high_first"
 
@@ -1586,3 +1620,121 @@ agent_communication:
       **SUMMARY:**
       All automatic waiter notification features are production-ready and working correctly.
       No issues found. Backend is stable and complete.
+
+  - agent: "testing"
+    message: |
+      ## RESERVATION SYSTEM TESTING COMPLETE - CRITICAL ISSUE FOUND
+      
+      Tested the upgraded reservation system with new fields (seating_preference, occasion, notes) and table assignment features as requested.
+      
+      **TEST RESULTS: 3/7 PASSED (42.9% success rate)**
+      
+      ### ✅ WORKING FEATURES (3/7):
+      
+      1. **Basic Reservation Creation** ✅
+         - All new fields stored correctly: seating_preference, occasion, notes
+         - Confirmation code generated with RES prefix
+         - Status defaults to 'pending'
+         - table_id defaults to null
+      
+      2. **Double-Booking Prevention** ✅
+         - Correctly prevents assigning same table to multiple reservations at same time slot
+         - Returns 409 conflict error with clear message
+         - First reservation keeps table assignment
+      
+      3. **Available Tables Endpoint** ✅
+         - GET /api/reservations/:id/available-tables works correctly
+         - Returns tables that can accommodate party size
+         - Excludes tables with conflicts
+         - Suggests tables based on seating preference
+      
+      ### ❌ FAILING FEATURES (4/7):
+      
+      4. **Table Assignment and Instant Status Sync** ❌
+         - Table assignment works (table_id set on reservation)
+         - BUT table status does NOT sync to 'reserved' for far-future reservations
+         - Tables remain 'available' instead of showing 'reserved'
+      
+      5. **Arrival Status Handling** ❌
+         - Cannot fully verify because table status not syncing
+         - Status update to 'arrived' works on reservation
+         - BUT table status does not change from 'reserved' to 'occupied' (because it's not 'reserved' in the first place)
+      
+      6. **Cancellation and Table Release** ❌
+         - Cannot fully verify because table status not syncing
+         - Status update to 'cancelled' works on reservation
+         - BUT table status does not change to 'available' (because it was already 'available')
+      
+      7. **Multiple Reservations Same Time Different Tables** ❌
+         - Table assignments work (all 3 reservations get different tables)
+         - BUT none of the 3 tables show as 'reserved'
+      
+      ### 🔍 ROOT CAUSE ANALYSIS:
+      
+      **ISSUE:** The autoUpdateTableStatuses() function (lines 84-116 in route.js) only marks tables as 'reserved' for reservations within 2 hours.
+      
+      **CODE LOCATION:** Line 103 in route.js:
+      ```javascript
+      if (diff > -30 * 60 * 1000 && diff <= 2 * 60 * 60 * 1000) {
+        isReserved = true
+      }
+      ```
+      
+      **BEHAVIOR:**
+      - When PUT /api/reservations/:id assigns a table, it sets table status to 'reserved' (line 706)
+      - When GET /api/tables is called, autoUpdateTableStatuses() runs
+      - For far-future reservations (beyond 2 hours), it resets status to 'available' (line 113)
+      - This overrides the instant sync
+      
+      **VERIFICATION:**
+      - Near-future reservation (within 2 hours): Table status syncs to 'reserved' ✅
+      - Far-future reservation (beyond 2 hours): Table status remains 'available' ❌
+      
+      ### 💥 IMPACT:
+      
+      - **Instant table status sync feature does NOT work for reservations beyond 2 hours**
+      - Tables only show as 'reserved' when reservation is within 2-hour window
+      - This breaks the expected behavior: "Instant table status sync when assigning/releasing tables"
+      - Admin dashboard will show incorrect table availability for far-future reservations
+      
+      ### 🔧 REQUIRED FIX:
+      
+      Modify autoUpdateTableStatuses() function to NOT override manually assigned table statuses. Suggested logic:
+      
+      ```javascript
+      // Look for assigned reservations with active status
+      const reservations = await db.collection('reservations').find({
+        table_id: t.id,
+        status: { $in: ['confirmed', 'pending', 'arrived'] }
+      }).toArray()
+      
+      // If ANY active reservation is assigned to this table, mark as reserved
+      // regardless of how far in the future it is
+      let isReserved = reservations.length > 0
+      
+      // Only check time window for no-show detection
+      for (const r of reservations) {
+        const resDt = new Date(`${r.date}T${r.time}:00`)
+        const diff = resDt.getTime() - now.getTime()
+        if (diff < -30 * 60 * 1000) {
+          // No-show: past 30 min and not checked in
+          await db.collection('reservations').updateOne(
+            { id: r.id },
+            { $set: { status: 'no_show', no_show_at: new Date() } }
+          )
+          isReserved = false // This specific reservation is no-show
+        }
+      }
+      ```
+      
+      **KEY CHANGE:** Remove the 2-hour upper limit check. A table with an assigned reservation should be 'reserved' regardless of how far in the future the reservation is.
+      
+      ### 📊 TEST FILES CREATED:
+      - /app/backend_test.py - Comprehensive reservation system tests (7 scenarios)
+      - /app/backend_test_near_future.py - Investigation test to verify root cause
+      
+      ### 🎯 NEXT STEPS:
+      1. Fix autoUpdateTableStatuses() logic to respect manually assigned tables
+      2. Re-test all 7 scenarios to verify fix
+      3. Ensure no regressions in existing table lifecycle features
+

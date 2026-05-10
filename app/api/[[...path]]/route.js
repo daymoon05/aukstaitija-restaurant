@@ -623,7 +623,13 @@ async function handleRoute(request, { params }) {
         time: body.time,
         guests: parseInt(body.guests) || 2,
         special_requests: body.special_requests || '',
-        status: 'confirmed',
+        notes: body.notes || '',
+        // New: customer expresses a preference rather than picking an exact
+        // table. The admin reads this preference when assigning a real table.
+        seating_preference: body.seating_preference || 'No preference',
+        occasion: body.occasion || 'Casual dining',
+        status: 'pending',
+        table_id: null,
         created_at: new Date(),
       }
       await db.collection('reservations').insertOne(reservation)
@@ -659,18 +665,121 @@ async function handleRoute(request, { params }) {
       return handleCORS(NextResponse.json(reservations.map(stripId)))
     }
 
-    // PUT /reservations/:id (admin) — generic status update
+    // PUT /reservations/:id (admin) — generic status / table_id update with
+    // timestamps for the full lifecycle:
+    // pending → confirmed → arrived → seated (checked_in) → completed
+    // (cancelled / no_show can interrupt at any point).
     if (path[0] === 'reservations' && path.length === 2 && method === 'PUT') {
       if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
       const body = await request.json()
+      const reservation = await db.collection('reservations').findOne({ id: path[1] })
+      if (!reservation) return handleCORS(NextResponse.json({ error: 'Reservation not found' }, { status: 404 }))
+      
       const update = {}
-      if (body.status) update.status = body.status
-      if (body.table_id !== undefined) update.table_id = body.table_id
-      if (body.status === 'no_show') update.no_show_at = new Date()
-      if (body.status === 'completed') update.completed_at = new Date()
+      
+      // Handle table assignment with double-booking prevention
+      if (body.table_id !== undefined && body.table_id !== null && body.table_id !== reservation.table_id) {
+        // Check if this table is already assigned to another reservation at the same time
+        const conflictingReservation = await db.collection('reservations').findOne({
+          id: { $ne: path[1] },
+          table_id: body.table_id,
+          date: reservation.date,
+          time: reservation.time,
+          status: { $in: ['pending', 'confirmed', 'arrived'] }
+        })
+        
+        if (conflictingReservation) {
+          return handleCORS(NextResponse.json({ 
+            error: `Table already reserved for ${reservation.time} on ${reservation.date}` 
+          }, { status: 409 }))
+        }
+        
+        // Release previous table if exists
+        if (reservation.table_id) {
+          await autoUpdateTableStatuses(db)
+        }
+        
+        update.table_id = body.table_id
+        update.table_assigned_at = new Date()
+        
+        // Instantly mark the new table as reserved
+        await setTableStatus(db, body.table_id, 'reserved')
+      }
+      
+      if (body.status) {
+        update.status = body.status
+        if (body.status === 'confirmed') update.confirmed_at = new Date()
+        if (body.status === 'arrived') {
+          update.arrived_at = new Date()
+          // When customer arrives, convert table from reserved to occupied if table assigned
+          if (reservation.table_id || body.table_id) {
+            const tableId = body.table_id || reservation.table_id
+            await setTableStatus(db, tableId, 'occupied')
+          }
+        }
+        if (body.status === 'cancelled') {
+          update.cancelled_at = new Date()
+          // Release table if cancelling
+          if (reservation.table_id) {
+            await setTableStatus(db, reservation.table_id, 'available')
+          }
+        }
+        if (body.status === 'no_show') {
+          update.no_show_at = new Date()
+          // Release table on no-show
+          if (reservation.table_id) {
+            await setTableStatus(db, reservation.table_id, 'available')
+          }
+        }
+        if (body.status === 'completed') update.completed_at = new Date()
+      }
+      
+      if (body.seating_preference) update.seating_preference = body.seating_preference
+      if (body.occasion) update.occasion = body.occasion
+      if (body.special_requests !== undefined) update.special_requests = body.special_requests
+      
       await db.collection('reservations').updateOne({ id: path[1] }, { $set: update })
       const updated = await db.collection('reservations').findOne({ id: path[1] })
+      
       return handleCORS(NextResponse.json(stripId(updated)))
+    }
+
+    // GET /reservations/:id/available-tables (admin) — get suitable tables for a reservation
+    if (path[0] === 'reservations' && path.length === 3 && path[2] === 'available-tables' && method === 'GET') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const reservation = await db.collection('reservations').findOne({ id: path[1] })
+      if (!reservation) return handleCORS(NextResponse.json({ error: 'Reservation not found' }, { status: 404 }))
+      
+      // Get all tables that can accommodate the party size
+      const allTables = await db.collection('tables').find({
+        capacity: { $gte: reservation.guests },
+        status: { $nin: ['out_of_service'] }
+      }).sort({ capacity: 1, number: 1 }).toArray()
+      
+      // Filter out tables that are already reserved for the same time slot
+      const conflictingReservations = await db.collection('reservations').find({
+        id: { $ne: reservation.id },
+        date: reservation.date,
+        time: reservation.time,
+        status: { $in: ['pending', 'confirmed', 'arrived'] },
+        table_id: { $ne: null }
+      }).toArray()
+      
+      const blockedTableIds = new Set(conflictingReservations.map(r => r.table_id))
+      const availableTables = allTables.filter(t => !blockedTableIds.has(t.id))
+      
+      // Suggest tables based on seating preference
+      const suggested = availableTables.filter(t => 
+        reservation.seating_preference === 'No preference' || 
+        t.section?.toLowerCase().includes(reservation.seating_preference?.toLowerCase()) ||
+        reservation.seating_preference?.toLowerCase().includes(t.section?.toLowerCase())
+      )
+      
+      return handleCORS(NextResponse.json({
+        available: availableTables.map(stripId),
+        suggested: suggested.map(stripId),
+        seating_preference: reservation.seating_preference
+      }))
     }
 
     // POST /reservations/:id/checkin (admin) — body { table_id } -> creates session, occupies table
