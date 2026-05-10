@@ -67,14 +67,33 @@ export default function RequestWaiterButton() {
 
   return (
     <>
-      {/* Floating Action Button */}
+      {/* Floating Extended Pill Button with Label */}
       <button
         onClick={() => setShowModal(true)}
-        className="fixed bottom-6 right-6 z-50 p-4 rounded-full bg-gradient-to-br from-amber-600/90 to-amber-700/90 backdrop-blur-xl border border-amber-500/30 shadow-2xl shadow-amber-500/20 hover:shadow-amber-500/40 transition-all hover:scale-110 active:scale-95"
-        aria-label="Request Assistance"
+        className="fixed bottom-6 right-6 z-50 group flex items-center gap-3 px-5 py-3.5 rounded-full bg-gradient-to-br from-amber-600/95 to-amber-700/95 backdrop-blur-xl border border-amber-500/40 shadow-2xl shadow-amber-500/30 hover:shadow-amber-500/50 transition-all hover:scale-105 active:scale-95 animate-[subtle-pulse_25s_ease-in-out_infinite]"
+        aria-label="Request Waiter"
       >
-        <Bell className="h-6 w-6 text-white" />
+        <Bell className="h-5 w-5 text-white flex-shrink-0" />
+        <span className="text-white font-semibold text-sm whitespace-nowrap">Request Waiter</span>
       </button>
+
+      {/* CSS for subtle pulse animation */}
+      <style jsx>{`
+        @keyframes subtle-pulse {
+          0%, 90% {
+            transform: scale(1);
+            box-shadow: 0 20px 25px -5px rgba(217, 119, 6, 0.3), 0 8px 10px -6px rgba(217, 119, 6, 0.3);
+          }
+          95% {
+            transform: scale(1.02);
+            box-shadow: 0 20px 25px -5px rgba(217, 119, 6, 0.5), 0 8px 10px -6px rgba(217, 119, 6, 0.5);
+          }
+          100% {
+            transform: scale(1);
+            box-shadow: 0 20px 25px -5px rgba(217, 119, 6, 0.3), 0 8px 10px -6px rgba(217, 119, 6, 0.3);
+          }
+        }
+      `}</style>
 
       {/* Request Modal */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
