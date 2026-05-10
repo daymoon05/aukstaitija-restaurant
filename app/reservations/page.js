@@ -64,17 +64,20 @@ function ReservationsPage() {
     try { localStorage.removeItem('latest_reservation_code') } catch {}
   }
 
-  // Fetches slots for the currently-selected date. Re-callable for the
-  // auto-refresh loop below without disturbing other state.
-  const loadSlots = async (selectedDate) => {
+  // Fetches slots for the currently-selected date + guest count. Re-callable
+  // for the auto-refresh loop and on guest-count change without disturbing
+  // other state.
+  const loadSlots = async (selectedDate, partySize) => {
     try {
-      const res = await fetch(`/api/reservations/availability?date=${selectedDate}`)
+      const res = await fetch(
+        `/api/reservations/availability?date=${selectedDate}&guests=${partySize}`
+      )
       const d = await res.json()
       const fresh = d.slots || []
       setSlots(fresh)
       // If the user had a slot selected that was just filtered out (because
-      // time passed), drop it so they're forced to pick a still-valid one
-      // before submitting.
+      // time passed or capacity ran out for the new guest count), drop it so
+      // they're forced to pick a still-valid one before submitting.
       setTime(prev => (prev && fresh.some(s => s.time === prev) ? prev : ''))
     } catch {
       setSlots([])
@@ -83,10 +86,10 @@ function ReservationsPage() {
   }
 
   useEffect(() => {
-    loadSlots(date)
+    loadSlots(date, guests)
     setTime('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date])
+  }, [date, guests])
 
   // Auto-refresh available slots while the page is open so a user who keeps
   // the form open for a while doesn't see stale (now-past) options. We only
@@ -94,10 +97,10 @@ function ReservationsPage() {
   useEffect(() => {
     const todayStr = new Date().toISOString().split('T')[0]
     if (date !== todayStr) return
-    const id = setInterval(() => loadSlots(date), 60_000)
+    const id = setInterval(() => loadSlots(date, guests), 60_000)
     return () => clearInterval(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date])
+  }, [date, guests])
 
   const submit = async (e) => {
     e.preventDefault()
@@ -111,7 +114,7 @@ function ReservationsPage() {
     if (!slots.some(s => s.time === time && s.available > 0)) {
       toast.error('Please select a valid future reservation time.')
       // Pull a fresh list so the UI catches up.
-      loadSlots(date)
+      loadSlots(date, guests)
       return
     }
     setSubmitting(true)
@@ -146,7 +149,7 @@ function ReservationsPage() {
         // If the backend specifically rejected the time, refresh slots so the
         // dead one disappears from the picker.
         if (typeof data.error === 'string' && data.error.toLowerCase().includes('reservation time')) {
-          loadSlots(date)
+          loadSlots(date, guests)
           setTime('')
         }
       }

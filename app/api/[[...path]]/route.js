@@ -38,6 +38,12 @@ function isAdmin(request) {
 // when deciding "what is in the past".
 const RESTAURANT_TZ = process.env.RESTAURANT_TIMEZONE || 'Europe/Vilnius'
 const RESERVATION_LEAD_MIN = 30
+// Assumed dwell time per reservation. Used to compute overlap windows so we
+// don't double-book a table that's still mid-service.
+const RESERVATION_DURATION_MIN = 90
+// Reservation statuses that should occupy a table for capacity purposes.
+// (cancelled / no_show / completed are released back to the pool.)
+const ACTIVE_RES_STATUSES = ['pending', 'confirmed', 'table_assigned', 'arrived', 'checked_in']
 
 function getRestaurantNow() {
   const now = new Date()
@@ -70,6 +76,60 @@ function isPastReservationSlot(date, time, restNow = getRestaurantNow()) {
   const slotMin = timeStrToMinutes(time)
   if (Number.isNaN(slotMin)) return true
   return slotMin < restNow.minutes + RESERVATION_LEAD_MIN
+}
+
+// Capacity-aware slot availability:
+// returns the array of tables that could host a `guests`-party reservation at
+// `time`, taking into account 90-minute service overlap with existing
+// reservations on the same date.
+//
+//   • A table is "blocked" when it is explicitly assigned to an overlapping
+//     reservation (table_id matches).
+//   • Unassigned overlapping reservations greedily consume the smallest still-
+//     free table that fits their party size, so a 6-top pending reservation
+//     can't double-claim a 2-top.
+//   • Tables with status `out_of_service` are never bookable.
+//
+// Returns the list of tables (capacity >= guests) that remain available.
+function suitableTablesForSlot({ slotTime, guests, sameDayReservations, allTables }) {
+  const slotMin = timeStrToMinutes(slotTime)
+  if (Number.isNaN(slotMin)) return []
+  const slotEnd = slotMin + RESERVATION_DURATION_MIN
+
+  const overlapping = sameDayReservations.filter(r => {
+    if (!ACTIVE_RES_STATUSES.includes(r.status)) return false
+    const rStart = timeStrToMinutes(r.time)
+    if (Number.isNaN(rStart)) return false
+    const rEnd = rStart + RESERVATION_DURATION_MIN
+    // standard half-open interval overlap
+    return rEnd > slotMin && rStart < slotEnd
+  })
+
+  const bookable = (allTables || []).filter(t => t.status !== 'out_of_service')
+
+  const blocked = new Set()
+  // 1) pin down explicitly assigned tables
+  for (const r of overlapping) {
+    if (r.table_id) blocked.add(r.table_id)
+  }
+  // 2) greedily reserve the smallest fitting table for each unassigned
+  //    overlapping reservation so we don't double-count capacity.
+  const unassigned = overlapping
+    .filter(r => !r.table_id)
+    .sort((a, b) => (b.guests || 1) - (a.guests || 1))
+  for (const r of unassigned) {
+    const need = r.guests || 1
+    const candidate = bookable
+      .filter(t => !blocked.has(t.id) && t.capacity >= need)
+      .sort((a, b) => a.capacity - b.capacity)[0]
+    if (candidate) blocked.add(candidate.id)
+    // If no candidate fits, the system is already over-promised — we just
+    // don't add anything to `blocked` for this reservation. Remaining
+    // suitable-table count is still capped by the bookable list, so this
+    // doesn't create false availability.
+  }
+
+  return bookable.filter(t => !blocked.has(t.id) && t.capacity >= guests)
 }
 
 async function ensureSeeded(db) {
@@ -840,15 +900,26 @@ async function handleRoute(request, { params }) {
         ))
       }
 
-      // Check capacity for that slot
-      const existing = await db.collection('reservations').find({
+      // Capacity-aware availability check using the same 90-min overlap logic
+      // as GET /availability. This is the authoritative gate against
+      // overbooking — we never trust the UI alone.
+      const guestsRequested = parseInt(body.guests) || 2
+      const allTables = await db.collection('tables').find({}).toArray()
+      const sameDayReservations = await db.collection('reservations').find({
         date: body.date,
-        time: body.time,
-        status: { $ne: 'cancelled' }
+        status: { $ne: 'cancelled' },
       }).toArray()
-      const totalTables = await db.collection('tables').countDocuments()
-      if (existing.length >= totalTables) {
-        return handleCORS(NextResponse.json({ error: 'Slot fully booked' }, { status: 409 }))
+      const suitable = suitableTablesForSlot({
+        slotTime: body.time,
+        guests: guestsRequested,
+        sameDayReservations,
+        allTables: allTables.filter(t => t.status !== 'out_of_service'),
+      })
+      if (suitable.length === 0) {
+        return handleCORS(NextResponse.json(
+          { error: 'Slot fully booked' },
+          { status: 409 }
+        ))
       }
 
       const reservation = {
@@ -942,36 +1013,57 @@ async function handleRoute(request, { params }) {
       }))
     }
 
-    // GET /reservations/availability?date=YYYY-MM-DD
+    // GET /reservations/availability?date=YYYY-MM-DD[&guests=N]
     if (route === '/reservations/availability' && method === 'GET') {
       const url = new URL(request.url)
       const date = url.searchParams.get('date')
+      const guests = Math.max(1, parseInt(url.searchParams.get('guests') || '2', 10) || 2)
       if (!date) return handleCORS(NextResponse.json({ error: 'date required' }, { status: 400 }))
-      const totalTables = await db.collection('tables').countDocuments()
-      const reservations = await db.collection('reservations').find({
+
+      const allTables = await db.collection('tables').find({}).toArray()
+      const bookable = allTables.filter(t => t.status !== 'out_of_service')
+      // Tables that could ever host a `guests`-party — used to compute the
+      // `total` field surfaced to the client (so the UI can display "X / Y
+      // available" against the relevant capacity, not the whole restaurant).
+      const fitTotal = bookable.filter(t => t.capacity >= guests).length
+
+      const sameDayReservations = await db.collection('reservations').find({
         date,
-        status: { $ne: 'cancelled' }
+        status: { $ne: 'cancelled' },
       }).toArray()
+
       const restNow = getRestaurantNow()
       const isToday = date === restNow.dateStr
       const isPast = date < restNow.dateStr
+
       const slots = []
       for (let h = 12; h <= 22; h++) {
         for (const m of [0, 30]) {
           if (h === 22 && m === 30) continue
           const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-          // Hide all past time slots — same-day-future-only logic with a
-          // 30-minute lead-time buffer. Future dates get every slot.
+
+          // 1) past-time / lead-time buffer (unchanged behaviour)
           if (isPast) continue
           if (isToday && timeStrToMinutes(time) < restNow.minutes + RESERVATION_LEAD_MIN) continue
-          const booked = reservations.filter(r => r.time === time).length
-          slots.push({ time, available: totalTables - booked, total: totalTables })
+
+          // 2) capacity-aware availability with 90-min overlap detection
+          const suitable = suitableTablesForSlot({
+            slotTime: time,
+            guests,
+            sameDayReservations,
+            allTables: bookable,
+          })
+          if (suitable.length === 0) continue // hide fully-booked / no-fit slots
+
+          slots.push({ time, available: suitable.length, total: fitTotal })
         }
       }
+
       return handleCORS(NextResponse.json({
         date,
         slots,
-        total_tables: totalTables,
+        total_tables: bookable.length,
+        guests,
         // Surface server's notion of "now" + lead-time so the client can
         // double-check / auto-refresh without re-implementing TZ logic.
         server_now: {
@@ -979,6 +1071,7 @@ async function handleRoute(request, { params }) {
           time: `${String(Math.floor(restNow.minutes / 60)).padStart(2, '0')}:${String(restNow.minutes % 60).padStart(2, '0')}`,
           timezone: RESTAURANT_TZ,
           lead_time_minutes: RESERVATION_LEAD_MIN,
+          duration_minutes: RESERVATION_DURATION_MIN,
         },
       }))
     }
