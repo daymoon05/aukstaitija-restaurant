@@ -63,7 +63,7 @@ function CartPage() {
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!form.name) { toast.error('Name is required'); return }
+    // Name is optional for dine-in QR ordering
     setSubmitting(true)
     try {
       const res = await fetch('/api/orders', {
@@ -74,7 +74,7 @@ function CartPage() {
           items: cart,
           type: 'dine-in',
           table_id: tableId || null,
-          customer: { name: form.name },
+          customer: { name: form.name || 'Guest' },
           notes,
           payment_method: payment,
           discount,
@@ -144,16 +144,26 @@ function CartPage() {
               ))}
             </div>
 
-            {/* Customer Info */}
+            {/* Optional Name Field - Collapsed by default */}
             <Card className="p-6 bg-card">
-              <Label className="text-sm font-medium mb-3 block">Your Name *</Label>
-              <Input 
-                value={form.name} 
-                onChange={e => setForm({ ...form, name: e.target.value })} 
-                placeholder="Enter your name"
-                required 
-                className="h-11"
-              />
+              <details className="group">
+                <summary className="cursor-pointer list-none">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium text-muted-foreground">Add your name (optional)</Label>
+                    <span className="text-xs text-muted-foreground group-open:hidden">Expand</span>
+                    <span className="text-xs text-muted-foreground hidden group-open:inline">Collapse</span>
+                  </div>
+                </summary>
+                <div className="mt-3">
+                  <Input 
+                    value={form.name} 
+                    onChange={e => setForm({ ...form, name: e.target.value })} 
+                    placeholder="Your name"
+                    className="h-11"
+                  />
+                  <p className="text-xs text-muted-foreground mt-2">Optional: Add your name so staff can address you personally.</p>
+                </div>
+              </details>
             </Card>
 
             {/* Order Notes */}
