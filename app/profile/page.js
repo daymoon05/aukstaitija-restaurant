@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useApp } from '@/lib/AppContext'
 import { toast } from 'sonner'
-import { User, MapPin, Heart, Calendar, ShoppingBag, Trash2, Plus, ChevronRight, ListOrdered } from 'lucide-react'
+import { User, MapPin, Heart, Calendar, ShoppingBag, Trash2, Plus, ChevronRight, ListOrdered, Bell } from 'lucide-react'
 
 const ACTIVE_STATUSES = new Set(['received', 'preparing', 'ready', 'out'])
 
@@ -21,6 +21,8 @@ function ProfilePage() {
   const [reservations, setReservations] = useState([])
   const [favorites, setFavorites] = useState([])
   const [addresses, setAddresses] = useState([])
+  const [unreadNotif, setUnreadNotif] = useState(0)
+  const [recentNotif, setRecentNotif] = useState(null) // newest unread, surfaced as a banner
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({ name: '', phone: '' })
 
@@ -36,11 +38,15 @@ function ProfilePage() {
       fetch('/api/users/me/reservations', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       fetch('/api/users/me/favorites', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
       fetch('/api/users/me/addresses', { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-    ]).then(([o, r, f, a]) => {
+      fetch('/api/notifications', { credentials: 'include' }).then(r => r.ok ? r.json() : { notifications: [], unread_count: 0 }),
+    ]).then(([o, r, f, a, n]) => {
       setOrders(o)
       setReservations(r)
       setFavorites(f)
       setAddresses(a)
+      setUnreadNotif(n.unread_count || 0)
+      const firstUnread = (n.notifications || []).find(x => !x.read)
+      setRecentNotif(firstUnread || null)
     })
   }, [user])
 
@@ -97,11 +103,41 @@ function ProfilePage() {
             <h1 className="font-serif text-5xl">Welcome, {user.name?.split(' ')[0] || 'guest'}</h1>
             <p className="text-sm text-muted-foreground mt-1">{user.email}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            <Link href="/profile/reservations">
+              <Button variant="outline" className="relative">
+                <Bell className="h-4 w-4 mr-2" />
+                Reservations & alerts
+                {unreadNotif > 0 && (
+                  <span className="ml-2 bg-primary text-primary-foreground rounded-full text-[10px] min-w-[18px] h-[18px] px-1 flex items-center justify-center font-bold">
+                    {unreadNotif > 9 ? '9+' : unreadNotif}
+                  </span>
+                )}
+              </Button>
+            </Link>
             <Link href="/orders"><Button variant="outline"><ListOrdered className="h-4 w-4 mr-2" />My orders</Button></Link>
             <Button variant="outline" onClick={async () => { await logout(); router.push('/') }}>Log out</Button>
           </div>
         </div>
+
+        {/* New-table banner — surfaces the most recent unread reservation_table_assigned notification */}
+        {recentNotif && (
+          <Card className="p-5 mb-6 border-primary/40 bg-gradient-to-br from-primary/10 via-primary/5 to-transparent">
+            <div className="flex items-start gap-4">
+              <div className="p-3 rounded-full bg-primary/15 text-primary">
+                <Bell className="h-5 w-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] uppercase tracking-[0.3em] text-primary mb-1">New notification</p>
+                <h3 className="font-serif text-xl mb-1">{recentNotif.title}</h3>
+                <p className="text-sm text-muted-foreground">{recentNotif.message}</p>
+              </div>
+              <Link href="/profile/reservations">
+                <Button size="sm">View <ChevronRight className="h-4 w-4 ml-1" /></Button>
+              </Link>
+            </div>
+          </Card>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -205,7 +241,12 @@ function ProfilePage() {
 
           {/* Reservations */}
           <Card className="p-6 md:col-span-2">
-            <h2 className="font-serif text-2xl flex items-center gap-2 mb-4"><Calendar className="h-5 w-5 text-primary" />Reservations</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-serif text-2xl flex items-center gap-2"><Calendar className="h-5 w-5 text-primary" />Reservations</h2>
+              <Link href="/profile/reservations" className="text-xs text-primary hover:underline flex items-center gap-1">
+                View timeline <ChevronRight className="h-3 w-3" />
+              </Link>
+            </div>
             {upcomingRes.length === 0 && pastRes.length === 0 ? (
               <p className="text-sm text-muted-foreground">No reservations yet. <Link href="/reservations" className="text-primary font-semibold">Book a table</Link></p>
             ) : (
@@ -214,15 +255,29 @@ function ProfilePage() {
                   <>
                     <p className="text-xs uppercase tracking-wider text-muted-foreground mb-2">Upcoming</p>
                     <div className="space-y-2 mb-4">
-                      {upcomingRes.map(r => (
-                        <div key={r.id} className="p-3 border border-border rounded-md flex items-center justify-between">
-                          <div>
-                            <p className="font-semibold text-sm">{r.date} at {r.time}</p>
-                            <p className="text-xs text-muted-foreground">{r.guests} guests · {r.confirmation}</p>
-                          </div>
-                          <span className="text-xs uppercase tracking-wider px-2 py-1 rounded bg-primary/10 text-primary">{r.status}</span>
-                        </div>
-                      ))}
+                      {upcomingRes.map(r => {
+                        const tableRevealed = ['table_assigned', 'arrived', 'checked_in'].includes(r.status)
+                        return (
+                          <Link
+                            key={r.id}
+                            href="/profile/reservations"
+                            className="p-3 border border-border rounded-md flex items-center justify-between hover:border-primary transition-colors"
+                          >
+                            <div>
+                              <p className="font-semibold text-sm">{r.date} at {r.time}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {r.guests} {r.guests === 1 ? 'guest' : 'guests'} · {r.confirmation}
+                                {tableRevealed && r.table_id && (
+                                  <span className="text-primary font-medium ml-1">· Table T{r.table_id.replace(/^t/, '')}</span>
+                                )}
+                              </p>
+                            </div>
+                            <span className="text-xs uppercase tracking-wider px-2 py-1 rounded bg-primary/10 text-primary">
+                              {r.status?.replace('_', ' ')}
+                            </span>
+                          </Link>
+                        )
+                      })}
                     </div>
                   </>
                 )}
@@ -236,7 +291,7 @@ function ProfilePage() {
                             <p className="font-semibold text-sm">{r.date} at {r.time}</p>
                             <p className="text-xs">{r.guests} guests · {r.confirmation}</p>
                           </div>
-                          <span className="text-xs uppercase tracking-wider">{r.status}</span>
+                          <span className="text-xs uppercase tracking-wider">{r.status?.replace('_', ' ')}</span>
                         </div>
                       ))}
                     </div>

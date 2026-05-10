@@ -98,10 +98,10 @@ function ReservationsPage() {
               </div>
             </div>
             <h1 className="font-serif text-5xl md:text-6xl mb-4 bg-gradient-to-r from-amber-200 via-amber-400 to-amber-200 bg-clip-text text-transparent">
-              Reservation Confirmed
+              Reservation Received
             </h1>
-            <p className="text-zinc-400 text-lg mb-3">
-              Your table is reserved. Our team will prepare the best available seating based on your preference.
+            <p className="text-zinc-400 text-lg mb-3 max-w-xl mx-auto">
+              Your reservation is confirmed. Your table will be assigned shortly — we'll notify you the moment it's ready.
             </p>
             <div className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500/10 border border-amber-500/20 rounded-full">
               <span className="text-amber-400 font-mono text-sm">Confirmation:</span>

@@ -103,7 +103,7 @@ async function autoUpdateTableStatuses(db) {
     // Look for assigned reservations (any future reservation or very recent past)
     const reservations = await db.collection('reservations').find({
       table_id: t.id,
-      status: { $in: ['confirmed', 'pending'] }
+      status: { $in: ['confirmed', 'pending', 'table_assigned'] }
     }).toArray()
     let isReserved = false
     for (const r of reservations) {
@@ -145,6 +145,116 @@ function summariseItems(items, max = 4) {
   const head = items.slice(0, max).map(i => `${i.quantity || 1}× ${i.name}`).join(', ')
   return items.length > max ? `${head}, +${items.length - max} more` : head
 }
+
+// ---------------- Notification helpers ----------------
+// In-app notifications go into the `notifications` collection and are read by
+// the customer profile UI. Email/SMS are *queued* (collections only, no
+// provider integration yet) so we can wire them up later without changing the
+// table-assignment flow.
+async function createNotification(db, { user_id, reservation_id, type, title, message, meta }) {
+  if (!user_id) return null // Guest reservation — nothing to deliver in-app
+  const doc = {
+    id: uuidv4(),
+    user_id,
+    reservation_id: reservation_id || null,
+    type,
+    title,
+    message,
+    meta: meta || {},
+    read: false,
+    created_at: new Date(),
+  }
+  await db.collection('notifications').insertOne(doc)
+  return doc
+}
+
+async function enqueueEmail(db, { to, subject, body, meta, type }) {
+  if (!to) return null
+  const doc = {
+    id: uuidv4(),
+    to,
+    subject: subject || '',
+    body: body || '',
+    type: type || 'generic',
+    meta: meta || {},
+    status: 'pending', // pending | sent | failed (no provider yet)
+    attempts: 0,
+    created_at: new Date(),
+    sent_at: null,
+  }
+  await db.collection('email_queue').insertOne(doc)
+  return doc
+}
+
+async function enqueueSMS(db, { to, body, meta, type }) {
+  if (!to) return null
+  const doc = {
+    id: uuidv4(),
+    to,
+    body: body || '',
+    type: type || 'generic',
+    meta: meta || {},
+    status: 'pending',
+    attempts: 0,
+    created_at: new Date(),
+    sent_at: null,
+  }
+  await db.collection('sms_queue').insertOne(doc)
+  return doc
+}
+
+// Fired when a manager assigns a table. Sends an in-app notification and
+// pushes one entry into each delivery queue so the email/SMS workers can pick
+// it up later. Safe for guest reservations — falls back to phone/email only.
+async function notifyTableAssigned(db, reservation, table) {
+  const tableLabel = `T${table.number}`
+  const section = table.section || 'Main hall'
+  const title = 'Your table is ready'
+  const message = `Table ${tableLabel} has been reserved for you at ${reservation.time}. Section: ${section}.`
+  const meta = {
+    table_number: table.number,
+    table_id: table.id,
+    section,
+    time: reservation.time,
+    date: reservation.date,
+    guests: reservation.guests,
+    confirmation: reservation.confirmation,
+  }
+
+  // 1) In-app (only for registered users)
+  if (reservation.user_id) {
+    await createNotification(db, {
+      user_id: reservation.user_id,
+      reservation_id: reservation.id,
+      type: 'reservation_table_assigned',
+      title,
+      message,
+      meta,
+    })
+  }
+
+  // 2) Email queue (always queued if we have an email)
+  if (reservation.email) {
+    await enqueueEmail(db, {
+      to: reservation.email,
+      subject: `${title} — Table ${tableLabel} at Aukštaitija`,
+      body: `Hi ${reservation.name || 'there'},\n\n${message}\nGuests: ${reservation.guests}.\n\nWe'll see you soon.\n— Aukštaitija`,
+      type: 'reservation_table_assigned',
+      meta,
+    })
+  }
+
+  // 3) SMS queue (always queued if we have a phone)
+  if (reservation.phone) {
+    await enqueueSMS(db, {
+      to: reservation.phone,
+      body: `Aukštaitija: Table ${tableLabel} reserved for you at ${reservation.time} (${section}). See you soon!`,
+      type: 'reservation_table_assigned',
+      meta,
+    })
+  }
+}
+
 
 async function handleRoute(request, { params }) {
   const { path = [] } = params
@@ -677,16 +787,21 @@ async function handleRoute(request, { params }) {
 
     // PUT /reservations/:id (admin) — generic status / table_id update with
     // timestamps for the full lifecycle:
-    // pending → confirmed → arrived → seated (checked_in) → completed
+    // pending → confirmed → table_assigned → arrived → checked_in → completed
     // (cancelled / no_show can interrupt at any point).
+    //
+    // Assigning a table implies the reservation is also confirmed (if not
+    // already). We fire an in-app notification + queue email/SMS deliveries
+    // the moment a table is assigned.
     if (path[0] === 'reservations' && path.length === 2 && method === 'PUT') {
       if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
       const body = await request.json()
       const reservation = await db.collection('reservations').findOne({ id: path[1] })
       if (!reservation) return handleCORS(NextResponse.json({ error: 'Reservation not found' }, { status: 404 }))
-      
+
       const update = {}
-      
+      let tableJustAssigned = null // Holds the new table doc when we should fire a notification
+
       // Handle table assignment with double-booking prevention
       if (body.table_id !== undefined && body.table_id !== null && body.table_id !== reservation.table_id) {
         // Check if this table is already assigned to another reservation at the same time
@@ -695,30 +810,52 @@ async function handleRoute(request, { params }) {
           table_id: body.table_id,
           date: reservation.date,
           time: reservation.time,
-          status: { $in: ['pending', 'confirmed', 'arrived'] }
+          status: { $in: ['pending', 'confirmed', 'table_assigned', 'arrived'] }
         })
-        
+
         if (conflictingReservation) {
-          return handleCORS(NextResponse.json({ 
-            error: `Table already reserved for ${reservation.time} on ${reservation.date}` 
+          return handleCORS(NextResponse.json({
+            error: `Table already reserved for ${reservation.time} on ${reservation.date}`
           }, { status: 409 }))
         }
-        
+
         // Release previous table if exists
         if (reservation.table_id) {
           await autoUpdateTableStatuses(db)
         }
-        
+
+        const newTable = await db.collection('tables').findOne({ id: body.table_id })
+        if (!newTable) {
+          return handleCORS(NextResponse.json({ error: 'Table not found' }, { status: 404 }))
+        }
+
         update.table_id = body.table_id
         update.table_assigned_at = new Date()
-        
+
+        // Assigning a table implies confirmation. Bump status to
+        // 'table_assigned' unless an explicit later-stage status is being set
+        // simultaneously (e.g. arrived/checked_in via the same PUT).
+        const downstream = ['arrived', 'checked_in', 'completed', 'cancelled', 'no_show']
+        if (!body.status || !downstream.includes(body.status)) {
+          update.status = 'table_assigned'
+          // Backfill confirmed_at if we are skipping the explicit confirm step
+          if (!reservation.confirmed_at) update.confirmed_at = new Date()
+        }
+
         // Instantly mark the new table as reserved
         await setTableStatus(db, body.table_id, 'reserved')
+
+        tableJustAssigned = newTable
       }
-      
+
       if (body.status) {
-        update.status = body.status
-        if (body.status === 'confirmed') update.confirmed_at = new Date()
+        // Honor explicit status from the body when it is "later" in the
+        // lifecycle than what the table-assignment block set above.
+        const explicitlyAdvancing = ['arrived', 'checked_in', 'completed', 'cancelled', 'no_show'].includes(body.status)
+        if (explicitlyAdvancing || !update.status) {
+          update.status = body.status
+        }
+        if (body.status === 'confirmed' && !reservation.confirmed_at) update.confirmed_at = new Date()
         if (body.status === 'arrived') {
           update.arrived_at = new Date()
           // When customer arrives, convert table from reserved to occupied if table assigned
@@ -743,14 +880,25 @@ async function handleRoute(request, { params }) {
         }
         if (body.status === 'completed') update.completed_at = new Date()
       }
-      
+
       if (body.seating_preference) update.seating_preference = body.seating_preference
       if (body.occasion) update.occasion = body.occasion
       if (body.special_requests !== undefined) update.special_requests = body.special_requests
-      
+
       await db.collection('reservations').updateOne({ id: path[1] }, { $set: update })
       const updated = await db.collection('reservations').findOne({ id: path[1] })
-      
+
+      // Fire notification AFTER the DB update so the customer sees the
+      // freshly-updated reservation when they navigate to /profile.
+      if (tableJustAssigned) {
+        try {
+          await notifyTableAssigned(db, updated, tableJustAssigned)
+        } catch (notifyErr) {
+          console.warn('notifyTableAssigned failed:', notifyErr.message)
+          // Non-fatal — the table assignment itself succeeded.
+        }
+      }
+
       return handleCORS(NextResponse.json(stripId(updated)))
     }
 
@@ -771,7 +919,7 @@ async function handleRoute(request, { params }) {
         id: { $ne: reservation.id },
         date: reservation.date,
         time: reservation.time,
-        status: { $in: ['pending', 'confirmed', 'arrived'] },
+        status: { $in: ['pending', 'confirmed', 'table_assigned', 'arrived'] },
         table_id: { $ne: null }
       }).toArray()
       
@@ -845,7 +993,7 @@ async function handleRoute(request, { params }) {
         // Upcoming reservation in next 4 hours assigned to this table
         const upcomingRes = await db.collection('reservations').findOne({
           table_id: t.id,
-          status: { $in: ['confirmed', 'pending'] },
+          status: { $in: ['confirmed', 'pending', 'table_assigned'] },
         })
         result.push({
           ...stripId(t),
@@ -869,7 +1017,7 @@ async function handleRoute(request, { params }) {
       }
       const upcomingRes = await db.collection('reservations').find({
         table_id: path[1],
-        status: { $in: ['confirmed', 'pending'] },
+        status: { $in: ['confirmed', 'pending', 'table_assigned'] },
       }).sort({ date: 1, time: 1 }).toArray()
       return handleCORS(NextResponse.json({
         ...stripId(table),
@@ -1288,6 +1436,49 @@ async function handleRoute(request, { params }) {
       const updated = (user.addresses || []).filter(a => a.id !== path[3])
       await db.collection('users').updateOne({ id: user.id }, { $set: { addresses: updated, updated_at: new Date() } })
       return handleCORS(NextResponse.json(updated))
+    }
+
+    // ====================================================================
+    //                       NOTIFICATIONS (logged-in user)
+    // ====================================================================
+
+    // GET /notifications — list current user's notifications.
+    // Query params: ?unread_only=true to filter to unread only.
+    if (route === '/notifications' && method === 'GET') {
+      const user = await currentUser()
+      if (!user) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const url = new URL(request.url)
+      const unreadOnly = url.searchParams.get('unread_only') === 'true'
+      const filter = { user_id: user.id }
+      if (unreadOnly) filter.read = false
+      const list = await db.collection('notifications').find(filter).sort({ created_at: -1 }).limit(50).toArray()
+      const unreadCount = await db.collection('notifications').countDocuments({ user_id: user.id, read: false })
+      return handleCORS(NextResponse.json({
+        notifications: list.map(stripId),
+        unread_count: unreadCount,
+      }))
+    }
+
+    // POST /notifications/:id/read — mark a single notification read
+    if (path[0] === 'notifications' && path.length === 3 && path[2] === 'read' && method === 'POST') {
+      const user = await currentUser()
+      if (!user) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      await db.collection('notifications').updateOne(
+        { id: path[1], user_id: user.id },
+        { $set: { read: true, read_at: new Date() } }
+      )
+      return handleCORS(NextResponse.json({ ok: true }))
+    }
+
+    // POST /notifications/read-all — mark all current user's notifications read
+    if (route === '/notifications/read-all' && method === 'POST') {
+      const user = await currentUser()
+      if (!user) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const result = await db.collection('notifications').updateMany(
+        { user_id: user.id, read: false },
+        { $set: { read: true, read_at: new Date() } }
+      )
+      return handleCORS(NextResponse.json({ ok: true, marked: result.modifiedCount || 0 }))
     }
 
     // ---------------- Admin auth ----------------

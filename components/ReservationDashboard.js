@@ -31,6 +31,7 @@ const OCCASION_ICONS = {
 const STATUS_STYLES = {
   pending: { bg: 'bg-amber-500/20', text: 'text-amber-400', border: 'border-amber-500/30', label: 'Pending' },
   confirmed: { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-500/30', label: 'Confirmed' },
+  table_assigned: { bg: 'bg-cyan-500/20', text: 'text-cyan-300', border: 'border-cyan-500/30', label: 'Table Assigned' },
   arrived: { bg: 'bg-purple-500/20', text: 'text-purple-400', border: 'border-purple-500/30', label: 'Arrived' },
   checked_in: { bg: 'bg-rose-500/20', text: 'text-rose-400', border: 'border-rose-500/30', label: 'Seated' },
   completed: { bg: 'bg-emerald-500/20', text: 'text-emerald-400', border: 'border-emerald-500/30', label: 'Completed' },
@@ -75,7 +76,9 @@ function ReservationDashboard({ reservations = [], token, onUpdate }) {
   }
 
   const assignTable = async (tableId) => {
-    await updateReservation(assigningTable.id, { table_id: tableId, status: 'confirmed' })
+    // Backend will set status='table_assigned' (and confirmed_at if needed),
+    // and fire the in-app + email + SMS notifications. We just send table_id.
+    await updateReservation(assigningTable.id, { table_id: tableId })
     setAssigningTable(null)
     setAvailableTables([])
   }
@@ -296,12 +299,14 @@ function ReservationDashboard({ reservations = [], token, onUpdate }) {
                         </Button>
                       )}
 
-                      {r.status === 'confirmed' && (
+                      {(r.status === 'confirmed' || r.status === 'table_assigned') && (
                         <Button 
                           size="sm" 
                           variant="outline"
                           onClick={() => updateReservation(r.id, { status: 'arrived' })}
                           className="border-purple-500/50 text-purple-400 hover:bg-purple-500/10"
+                          disabled={!r.table_id}
+                          title={!r.table_id ? 'Assign a table first' : ''}
                         >
                           <UserCheck className="h-4 w-4 mr-2" />
                           Mark Arrived
