@@ -75,20 +75,19 @@ const OverflowItem = ({ onClick, children, danger }) => (
 )
 
 // ── Order card ──────────────────────────────────────────────────────────────
-// Streamlined 2-action workflow:
-//   received → "Start Cooking"     (overflow: priority, reject)
-//   preparing → "Ready"            (overflow: priority, call courier for delivery)
-//   ready     → passive status     (overflow: dispatch / mark picked up / hand over)
+// Ultra-minimal kitchen workflow:
+//   Incoming Queue (received + preparing) → ONE button: "Food Ready"
+//   Ready                                  → passive holding area (no chef action)
 // Urgency: amber glow after 5 min, red pulsing after 8 min.
-function OrderCard({ order, now, onAccept, onReject, onReady, onDispatch, onPickedUp, onPriority, onServed }) {
+function OrderCard({ order, now, onReject, onReady, onDispatch, onPickedUp, onPriority, onServed }) {
   const TypeIcon = TYPE_ICONS[order.type] || ShoppingBag
   const createdMs = now - new Date(order.created_at).getTime()
-  const acceptedMs = order.accepted_at ? now - new Date(order.accepted_at).getTime() : 0
   const readyMs = order.ready_at ? now - new Date(order.ready_at).getTime() : 0
+  const isReady = order.status === 'ready'
 
-  // New urgency thresholds (5 min amber, 8 min red) — only active until ready.
-  const isLate   = order.status !== 'ready' && createdMs > 5 * 60 * 1000
-  const isUrgent = order.status !== 'ready' && (createdMs > 8 * 60 * 1000 || order.priority)
+  // Urgency thresholds (5 min amber, 8 min red) — only active until ready.
+  const isLate   = !isReady && createdMs > 5 * 60 * 1000
+  const isUrgent = !isReady && (createdMs > 8 * 60 * 1000 || order.priority)
 
   const provider = order.delivery_method || order.delivery_provider
   const providerInfo = provider ? PROVIDER_LABEL[provider] : null
@@ -98,11 +97,9 @@ function OrderCard({ order, now, onAccept, onReject, onReady, onDispatch, onPick
   const courierAlreadyRequested = isDelivery && ['courier_requested', 'courier_assigned', 'picked_up', 'on_the_way', 'delivered'].includes(order.delivery_status)
 
   // Per-status accent system
-  const accent = order.status === 'received'
-    ? { glow: 'shadow-[0_0_32px_-12px_rgba(212,165,74,0.4)]', edge: 'before:from-amber-400/70 before:via-amber-400/20', ring: 'ring-amber-400/30' }
-    : order.status === 'preparing'
-      ? { glow: 'shadow-[0_0_32px_-12px_rgba(56,189,248,0.4)]', edge: 'before:from-sky-400/70 before:via-sky-400/20', ring: 'ring-sky-400/30' }
-      : { glow: 'shadow-[0_0_32px_-12px_rgba(16,185,129,0.4)]', edge: 'before:from-emerald-400/70 before:via-emerald-400/20', ring: 'ring-emerald-400/30' }
+  const accent = isReady
+    ? { glow: 'shadow-[0_0_32px_-12px_rgba(16,185,129,0.4)]', edge: 'before:from-emerald-400/70 before:via-emerald-400/20', ring: 'ring-emerald-400/30' }
+    : { glow: 'shadow-[0_0_32px_-12px_rgba(212,165,74,0.4)]', edge: 'before:from-amber-400/70 before:via-amber-400/20', ring: 'ring-amber-400/30' }
 
   const urgencyRing = isUrgent
     ? 'ring-2 ring-red-500/70 animate-[pulse_1.6s_ease-in-out_infinite] shadow-[0_0_36px_-8px_rgba(239,68,68,0.5)]'
@@ -155,14 +152,9 @@ function OrderCard({ order, now, onAccept, onReject, onReady, onDispatch, onPick
               {formatElapsed(createdMs)}
             </div>
             <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mt-0.5">since order</p>
-            {order.status === 'preparing' && (
-              <p className="text-[11px] mt-1 font-mono text-sky-300 tabular-nums">
-                <span className="opacity-70">cook</span> {formatElapsed(acceptedMs)}
-              </p>
-            )}
-            {order.status === 'ready' && (
+            {isReady && (
               <p className="text-[11px] mt-1 font-mono text-emerald-300 tabular-nums">
-                <span className="opacity-70">ready</span> {formatElapsed(readyMs)}
+                <span className="opacity-70">waiting</span> {formatElapsed(readyMs)}
               </p>
             )}
           </div>
@@ -195,15 +187,15 @@ function OrderCard({ order, now, onAccept, onReject, onReady, onDispatch, onPick
           </div>
         )}
 
-        {/* Actions — one primary CTA + overflow */}
+        {/* Actions — one primary CTA + overflow, OR passive Ready state */}
         <div className="flex gap-2">
-          {order.status === 'received' && (
+          {!isReady && (
             <>
               <Button
-                onClick={() => onAccept(order.id)}
-                className="flex-1 h-12 text-base font-semibold bg-gradient-to-b from-amber-300 to-amber-500 hover:from-amber-200 hover:to-amber-400 text-zinc-950 shadow-md shadow-amber-500/25 border-0"
+                onClick={() => onReady(order.id)}
+                className="flex-1 h-12 text-base font-semibold bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/25 border-0"
               >
-                <ChefHat className="h-4 w-4 mr-2" /> Start Cooking
+                <CheckCircle2 className="h-4 w-4 mr-2" /> Food Ready
               </Button>
               <OverflowMenu>
                 {(close) => (
@@ -221,33 +213,7 @@ function OrderCard({ order, now, onAccept, onReject, onReady, onDispatch, onPick
             </>
           )}
 
-          {order.status === 'preparing' && (
-            <>
-              <Button
-                onClick={() => onReady(order.id)}
-                className="flex-1 h-12 text-base font-semibold bg-gradient-to-b from-sky-500 to-sky-700 hover:from-sky-400 hover:to-sky-600 text-white shadow-md shadow-sky-500/25 border-0"
-              >
-                <PackageCheck className="h-4 w-4 mr-2" /> Ready
-              </Button>
-              <OverflowMenu>
-                {(close) => (
-                  <>
-                    <OverflowItem onClick={() => { onPriority(order.id, !order.priority); close() }}>
-                      <Flame className={`h-4 w-4 ${order.priority ? 'fill-red-500 text-red-500' : 'text-zinc-400'}`} />
-                      {order.priority ? 'Clear priority' : 'Mark as priority'}
-                    </OverflowItem>
-                    {isDelivery && !courierAlreadyRequested && (
-                      <OverflowItem onClick={() => { onDispatch(order); close() }}>
-                        <Bike className="h-4 w-4 text-amber-300" /> Call courier
-                      </OverflowItem>
-                    )}
-                  </>
-                )}
-              </OverflowMenu>
-            </>
-          )}
-
-          {order.status === 'ready' && (
+          {isReady && (
             <>
               <div className="flex-1 h-12 px-4 rounded-md bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center gap-2 text-sm text-emerald-300 font-semibold">
                 <CheckCircle2 className="h-4 w-4" />
@@ -476,11 +442,15 @@ function KitchenPage() {
     return filter === 'all' ? orders : orders.filter(o => o.type === filter)
   }, [orders, filter])
 
-  const cols = useMemo(() => ({
-    received: visible.filter(o => o.status === 'received'),
-    preparing: visible.filter(o => o.status === 'preparing'),
-    ready: visible.filter(o => o.status === 'ready'),
-  }), [visible])
+  const cols = useMemo(() => {
+    const sortAsc = (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    const sortReady = (a, b) => new Date(a.ready_at || a.created_at).getTime() - new Date(b.ready_at || b.created_at).getTime()
+    return {
+      // Auto-accepted: every order in received OR preparing belongs to the live queue.
+      incoming: visible.filter(o => o.status === 'received' || o.status === 'preparing').sort(sortAsc),
+      ready: visible.filter(o => o.status === 'ready').sort(sortReady),
+    }
+  }, [visible])
 
   // Average prep time across active + completed orders that have both timestamps.
   const avgPrepMin = useMemo(() => {
@@ -517,21 +487,18 @@ function KitchenPage() {
 
   // ── Layout ────────────────────────────────────────────────────────────────
   const navBadges = {
-    orders: orders.length,
-    incoming: cols.received.length,
-    cooking: cols.preparing.length,
+    orders: cols.incoming.length + cols.ready.length,
+    incoming: cols.incoming.length,
     ready: cols.ready.length,
     completed: completed.length,
   }
 
   const pickColumns = () => {
-    if (view === 'incoming') return [{ k: 'received', title: 'Incoming', accent: COL_ACCENTS.incoming, icon: Inbox, list: cols.received }]
-    if (view === 'cooking')  return [{ k: 'preparing', title: 'Cooking', accent: COL_ACCENTS.cooking, icon: Soup, list: cols.preparing }]
+    if (view === 'incoming') return [{ k: 'incoming', title: 'Incoming Queue', accent: COL_ACCENTS.incoming, icon: Inbox, list: cols.incoming }]
     if (view === 'ready')    return [{ k: 'ready', title: 'Ready', accent: COL_ACCENTS.ready, icon: PackageCheck, list: cols.ready }]
     return [
-      { k: 'received',  title: 'Incoming', accent: COL_ACCENTS.incoming, icon: Inbox,        list: cols.received },
-      { k: 'preparing', title: 'Cooking',  accent: COL_ACCENTS.cooking,  icon: Soup,         list: cols.preparing },
-      { k: 'ready',     title: 'Ready',    accent: COL_ACCENTS.ready,    icon: PackageCheck, list: cols.ready },
+      { k: 'incoming', title: 'Incoming Queue', accent: COL_ACCENTS.incoming, icon: Inbox,        list: cols.incoming },
+      { k: 'ready',    title: 'Ready',          accent: COL_ACCENTS.ready,    icon: PackageCheck, list: cols.ready },
     ]
   }
 
@@ -565,7 +532,6 @@ function KitchenPage() {
             <p className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-[0.3em] text-zinc-600">Workflow</p>
             <NavItem active={view === 'orders'}    icon={LayoutGrid}   label="Orders"    badge={navBadges.orders}    onClick={() => setView('orders')} />
             <NavItem active={view === 'incoming'}  icon={Inbox}        label="Incoming"  badge={navBadges.incoming}  onClick={() => setView('incoming')} />
-            <NavItem active={view === 'cooking'}   icon={Soup}         label="Cooking"   badge={navBadges.cooking}   onClick={() => setView('cooking')} />
             <NavItem active={view === 'ready'}     icon={PackageCheck} label="Ready"     badge={navBadges.ready}     onClick={() => setView('ready')} />
             <NavItem active={view === 'completed'} icon={History}      label="Completed" badge={navBadges.completed} onClick={() => setView('completed')} />
             <p className="px-4 pt-4 pb-1 text-[10px] uppercase tracking-[0.3em] text-zinc-600">System</p>
@@ -732,7 +698,7 @@ function KitchenPage() {
             {/* Board view */}
             {!showCompleted && !showSettings && (
               <>
-                <div className={`grid gap-5 ${columns.length === 1 ? 'grid-cols-1' : columns.length === 2 ? 'md:grid-cols-2' : 'xl:grid-cols-3'}`}>
+                <div className={`grid gap-5 ${columns.length === 1 ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
                   {columns.map(col => (
                     <section key={col.k} className="min-w-0">
                       <ColumnHeader title={col.title} count={col.list.length} accent={col.accent} icon={col.icon} />
@@ -741,8 +707,7 @@ function KitchenPage() {
                           <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] py-16 px-6 text-center">
                             <col.icon className="h-7 w-7 mx-auto text-zinc-600 mb-2" />
                             <p className="text-sm text-zinc-500">
-                              {col.k === 'received' && 'No new orders'}
-                              {col.k === 'preparing' && 'Nothing on the pass'}
+                              {col.k === 'incoming' && 'Queue is clear · awaiting orders'}
                               {col.k === 'ready' && 'No orders ready'}
                             </p>
                           </div>
@@ -750,7 +715,6 @@ function KitchenPage() {
                         {col.list.map(o => (
                           <OrderCard
                             key={o.id} order={o} now={now}
-                            onAccept={(id) => updateOrder(id, { status: 'preparing' })}
                             onReject={handleReject}
                             onReady={(id) => updateOrder(id, { status: 'ready' })}
                             onDispatch={handleDispatch}
@@ -772,7 +736,7 @@ function KitchenPage() {
             <footer className="sticky bottom-0 border-t border-white/5 bg-black/70 backdrop-blur-xl">
               <div className="px-6 py-3 grid grid-cols-2 md:grid-cols-4 gap-4">
                 <Stat label="Today's orders" value={analytics?.today_orders ?? '—'} icon={Activity} accent="text-amber-300" />
-                <Stat label="In progress" value={cols.preparing.length + cols.received.length} icon={Soup} accent="text-sky-300" />
+                <Stat label="In queue" value={cols.incoming.length} icon={Inbox} accent="text-amber-300" />
                 <Stat label="Ready" value={cols.ready.length} icon={PackageCheck} accent="text-emerald-300" />
                 <Stat label="Avg prep time" value={avgPrepMin > 0 ? `${avgPrepMin}m` : '—'} icon={Clock} accent="text-zinc-200" />
               </div>
