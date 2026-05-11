@@ -25,6 +25,12 @@ function AdminPage() {
   const [editing, setEditing] = useState(null)
   const [showDishForm, setShowDishForm] = useState(false)
   const [dispatchOrder, setDispatchOrder] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  // Defensive: always normalize API payloads into arrays before storing.
+  // Prevents `dishes.map is not a function` style crashes when the API
+  // returns null/undefined/object (e.g. {error: '...'}).
+  const asArray = (v) => (Array.isArray(v) ? v : [])
 
   useEffect(() => {
     const t = localStorage.getItem('aukstaitija_admin_token') || ''
@@ -44,23 +50,41 @@ function AdminPage() {
 
   const logout = () => { setToken(''); localStorage.removeItem('aukstaitija_admin_token') }
 
+  // adminFetch is defensive: returns the parsed body on 2xx, null on 4xx/5xx
+  // or non-JSON responses. Never throws — callers can safely `if (data)`.
   const adminFetch = async (url, options = {}) => {
-    const res = await fetch(url, { ...options, headers: { ...(options.headers || {}), 'x-admin-token': token, 'Content-Type': 'application/json' } })
-    if (res.status === 401) { logout(); return null }
-    return res.json()
+    try {
+      const res = await fetch(url, { ...options, headers: { ...(options.headers || {}), 'x-admin-token': token, 'Content-Type': 'application/json' } })
+      if (res.status === 401) { logout(); return null }
+      if (!res.ok) {
+        console.error(`[admin] ${url} -> HTTP ${res.status}`)
+        return null
+      }
+      return await res.json()
+    } catch (err) {
+      console.error(`[admin] ${url} -> network error`, err)
+      return null
+    }
   }
 
   const loadAll = async () => {
-    const [a, d, o, r] = await Promise.all([
-      adminFetch('/api/admin/analytics'),
-      adminFetch('/api/dishes'),
-      adminFetch('/api/orders'),
-      adminFetch('/api/reservations'),
-    ])
-    if (a) setAnalytics(a)
-    if (d) setDishes(d)
-    if (o) setOrders(o)
-    if (r) setReservations(r)
+    setLoading(true)
+    try {
+      const [a, d, o, r] = await Promise.all([
+        adminFetch('/api/admin/analytics'),
+        adminFetch('/api/dishes'),
+        adminFetch('/api/orders'),
+        adminFetch('/api/reservations'),
+      ])
+      // analytics: keep as-is when it's an object (its UI checks it before render).
+      setAnalytics(a && typeof a === 'object' && !Array.isArray(a) ? a : null)
+      // dishes / orders / reservations MUST be arrays before .map(...)
+      setDishes(asArray(d))
+      setOrders(asArray(o))
+      setReservations(asArray(r))
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { if (token) loadAll() }, [token])
@@ -152,7 +176,9 @@ function AdminPage() {
             </div>
             <Card className="p-6">
               <h3 className="font-serif text-2xl mb-4">{t('admin.top')}</h3>
-              {analytics.top_dishes.length === 0 ? <p className="text-sm text-muted-foreground">No data yet — place an order to see analytics</p> : (
+              {!Array.isArray(analytics.top_dishes) || analytics.top_dishes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No data yet — place an order to see analytics</p>
+              ) : (
                 <ul className="space-y-2">
                   {analytics.top_dishes.map((d, i) => (
                     <li key={d.name} className="flex justify-between items-center p-3 bg-muted/40 rounded-md">
@@ -236,27 +262,64 @@ function AdminPage() {
         {tab === 'dishes' && (
           <div>
             <div className="flex justify-between mb-4">
-              <p className="text-sm text-muted-foreground">{dishes.length} dishes</p>
+              <p className="text-sm text-muted-foreground">
+                {loading ? 'Loading…' : `${dishes.length} ${dishes.length === 1 ? 'dish' : 'dishes'}`}
+              </p>
               <Button onClick={() => { setEditing({ name: '', name_lt: '', description: '', description_lt: '', price: 0, category: 'mains', dietary_tags: [], spice_level: 0, available: true, prep_time: 15, bestseller: false, image_url: '', ingredients: [], allergens: [] }); setShowDishForm(true) }}>
                 <Plus className="h-4 w-4 mr-1" /> {t('admin.add_dish')}
               </Button>
             </div>
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {dishes.map(d => (
-                <Card key={d.id} className="p-4 flex gap-3">
-                  <img src={d.image_url} alt={d.name} className="w-24 h-24 object-cover rounded-sm" />
-                  <div className="flex-1">
-                    <h4 className="font-serif text-lg">{d.name}</h4>
-                    <p className="text-xs text-muted-foreground">{d.category} • €{d.price.toFixed(2)} {d.bestseller && '• ★'}</p>
-                    <p className="text-xs mt-1">{d.available ? <span className="text-green-600">Available</span> : <span className="text-destructive">Unavailable</span>}</p>
-                    <div className="flex gap-2 mt-2">
-                      <Button size="sm" variant="outline" onClick={() => { setEditing({ ...d }); setShowDishForm(true) }}><Edit className="h-3 w-3" /></Button>
-                      <Button size="sm" variant="outline" onClick={() => deleteDish(d.id)}><Trash2 className="h-3 w-3" /></Button>
+
+            {loading && dishes.length === 0 ? (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[0, 1, 2].map(i => (
+                  <Card key={i} className="p-4 flex gap-3 animate-pulse">
+                    <div className="w-24 h-24 rounded-sm bg-muted" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-4 w-2/3 bg-muted rounded" />
+                      <div className="h-3 w-1/2 bg-muted rounded" />
+                      <div className="h-3 w-1/3 bg-muted rounded" />
                     </div>
-                  </div>
-                </Card>
-              ))}
-            </div>
+                  </Card>
+                ))}
+              </div>
+            ) : dishes.length === 0 ? (
+              <Card className="p-10 text-center">
+                <div className="mx-auto h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+                  <Utensils className="h-8 w-8 text-primary" />
+                </div>
+                <h3 className="font-serif text-2xl mb-2">No dishes yet</h3>
+                <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">
+                  Start building your menu by adding your first dish. Guests won't see anything in the menu until at least one dish is published.
+                </p>
+                <Button
+                  onClick={() => {
+                    setEditing({ name: '', name_lt: '', description: '', description_lt: '', price: 0, category: 'mains', dietary_tags: [], spice_level: 0, available: true, prep_time: 15, bestseller: false, image_url: '', ingredients: [], allergens: [] })
+                    setShowDishForm(true)
+                  }}
+                >
+                  <Plus className="h-4 w-4 mr-1" /> Add First Dish
+                </Button>
+              </Card>
+            ) : (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {dishes.map(d => (
+                  <Card key={d.id} className="p-4 flex gap-3">
+                    <img src={d.image_url} alt={d.name} className="w-24 h-24 object-cover rounded-sm" />
+                    <div className="flex-1">
+                      <h4 className="font-serif text-lg">{d.name}</h4>
+                      <p className="text-xs text-muted-foreground">{d.category} • €{(d.price ?? 0).toFixed(2)} {d.bestseller && '• ★'}</p>
+                      <p className="text-xs mt-1">{d.available ? <span className="text-green-600">Available</span> : <span className="text-destructive">Unavailable</span>}</p>
+                      <div className="flex gap-2 mt-2">
+                        <Button size="sm" variant="outline" onClick={() => { setEditing({ ...d }); setShowDishForm(true) }}><Edit className="h-3 w-3" /></Button>
+                        <Button size="sm" variant="outline" onClick={() => deleteDish(d.id)}><Trash2 className="h-3 w-3" /></Button>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+
             {showDishForm && editing && (
               <DishForm dish={editing} onSave={saveDish} onClose={() => { setShowDishForm(false); setEditing(null) }} />
             )}
