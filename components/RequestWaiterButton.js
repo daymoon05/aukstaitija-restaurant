@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Bell, Droplets, Receipt, AlertTriangle, HelpCircle, X } from 'lucide-react'
@@ -21,8 +21,20 @@ export default function RequestWaiterButton() {
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  // Debug: Log when component mounts
+  useEffect(() => {
+    if (tableId) {
+      console.log('✅ RequestWaiterButton mounted with tableId:', tableId)
+    } else {
+      console.log('❌ RequestWaiterButton mounted but no tableId')
+    }
+  }, [tableId])
+
   // Only show for dine-in customers
-  if (!tableId) return null
+  if (!tableId) {
+    console.log('⚠️ RequestWaiterButton: No tableId, not rendering')
+    return null
+  }
 
   const handleRequest = async (type) => {
     setSelectedType(type)
@@ -67,14 +79,18 @@ export default function RequestWaiterButton() {
 
   return (
     <>
-      {/* Floating Extended Pill Button with Label */}
+      {/* Floating Extended Pill Button - Mobile Optimized */}
       <button
         onClick={() => setShowModal(true)}
-        className="fixed bottom-6 right-6 z-50 group flex items-center gap-3 px-5 py-3.5 rounded-full bg-gradient-to-br from-amber-600/95 to-amber-700/95 backdrop-blur-xl border border-amber-500/40 shadow-2xl shadow-amber-500/30 hover:shadow-amber-500/50 transition-all hover:scale-105 active:scale-95 animate-[subtle-pulse_25s_ease-in-out_infinite]"
-        aria-label="Request Waiter"
+        style={{
+          bottom: 'max(20px, env(safe-area-inset-bottom, 20px))',
+          right: '20px',
+        }}
+        className="fixed z-[9999] group flex items-center gap-2 sm:gap-3 px-4 sm:px-5 py-3 sm:py-3.5 rounded-full bg-gradient-to-br from-amber-600/95 to-amber-700/95 backdrop-blur-xl border-2 border-amber-500/40 shadow-2xl shadow-amber-500/30 hover:shadow-amber-500/50 transition-all hover:scale-105 active:scale-95 animate-[subtle-pulse_25s_ease-in-out_infinite]"
+        aria-label="Need Help"
       >
-        <Bell className="h-5 w-5 text-white flex-shrink-0" />
-        <span className="text-white font-semibold text-sm whitespace-nowrap">Request Waiter</span>
+        <Bell className="h-4 w-4 sm:h-5 sm:w-5 text-white flex-shrink-0" />
+        <span className="text-white font-semibold text-xs sm:text-sm whitespace-nowrap">Need Help</span>
       </button>
 
       {/* CSS for subtle pulse animation */}

@@ -231,6 +231,10 @@ function WaiterPage() {
 
   // Only show pending (ready) orders - removed inService filter
   const ready = useMemo(() => notifs.filter(n => n.status === 'pending'), [notifs])
+  
+  // Separate bill requests from other guest requests
+  const billRequests = useMemo(() => guestRequests.filter(r => r.request_type === 'bill'), [guestRequests])
+  const otherRequests = useMemo(() => guestRequests.filter(r => r.request_type !== 'bill'), [guestRequests])
 
   if (!token) {
     return (
@@ -330,8 +334,73 @@ function WaiterPage() {
           </div>
         </div>
 
+        {/* Bill Requests Section */}
+        {billRequests.length > 0 && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-5 px-1">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-purple-400/15 ring-1 ring-purple-400/30 flex items-center justify-center">
+                  <Receipt className="h-5 w-5 text-purple-300" />
+                </div>
+                <div>
+                  <h2 className="font-serif text-3xl text-zinc-50 tracking-tight leading-none">Bill Requests</h2>
+                  <p className="text-[11px] uppercase tracking-[0.3em] text-zinc-500 mt-1">Payment ready</p>
+                </div>
+              </div>
+              <span className="font-mono text-4xl tabular-nums text-purple-300">{String(billRequests.length).padStart(2, '0')}</span>
+            </div>
+            
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {billRequests.map(req => {
+                const createdMs = now - new Date(req.created_at).getTime()
+                
+                return (
+                  <div key={req.id} className="relative overflow-hidden rounded-2xl bg-zinc-950/70 backdrop-blur-xl ring-1 ring-purple-400/40 shadow-[0_0_32px_-10px_rgba(168,85,247,0.4)] transition-all hover:-translate-y-0.5">
+                    <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-purple-300/80 to-transparent" />
+                    <div className="p-5">
+                      <div className="flex items-start justify-between mb-3 gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="bg-gradient-to-b from-purple-300 to-purple-500 text-zinc-950 px-4 py-1.5 rounded-md font-bold tracking-wide text-lg shadow-lg shadow-purple-500/30">
+                              Table {req.table_number || '?'}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wider uppercase border bg-purple-500/10 border-purple-500/30 text-purple-300">
+                              Request Bill
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="flex items-center justify-end gap-1.5 font-mono text-xl tabular-nums text-purple-300">
+                            <Clock className="h-4 w-4 opacity-70" /> {formatElapsed(createdMs)}
+                          </div>
+                          <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mt-0.5">ago</p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <Link href={`/waiter/table/${req.table_id}`} className="flex-1">
+                          <Button className="w-full h-12 text-base font-semibold bg-gradient-to-b from-purple-500 to-purple-700 hover:from-purple-400 hover:to-purple-600 text-white shadow-lg shadow-purple-500/30 border-0">
+                            <Receipt className="h-5 w-5 mr-2" /> View Bill
+                          </Button>
+                        </Link>
+                        <Button
+                          onClick={() => resolveRequest(req.id)}
+                          variant="outline"
+                          className="h-12 px-4 border-zinc-700 text-zinc-400 hover:bg-zinc-800"
+                        >
+                          <CheckCircle2 className="h-5 w-5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Guest Requests Section */}
-        {guestRequests.length > 0 && (
+        {otherRequests.length > 0 && (
           <div className="mb-8">
             <div className="flex items-center justify-between mb-5 px-1">
               <div className="flex items-center gap-3">
@@ -347,7 +416,7 @@ function WaiterPage() {
             </div>
             
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {guestRequests.map(req => {
+              {otherRequests.map(req => {
                 const createdMs = now - new Date(req.created_at).getTime()
                 const requestTypeLabels = {
                   waiter: 'Request Waiter',

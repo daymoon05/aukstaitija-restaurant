@@ -1082,6 +1082,55 @@ async function handleRoute(request, { params }) {
       return handleCORS(NextResponse.json(stripId(updated)))
     }
 
+    // POST /tables/:id/complete-payment (admin) — Complete payment and close table session
+    if (path[0] === 'tables' && path.length === 3 && path[2] === 'complete-payment' && method === 'POST') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const tableId = path[1]
+      const now = new Date()
+      
+      // Get active session
+      const session = await db.collection('sessions').findOne({ table_id: tableId, session_status: 'active' })
+      if (!session) {
+        return handleCORS(NextResponse.json({ error: 'No active session found' }, { status: 404 }))
+      }
+      
+      // Close session
+      await db.collection('sessions').updateOne(
+        { id: session.id },
+        { $set: { session_status: 'completed', ended_at: now } }
+      )
+      
+      // Mark table as available
+      await db.collection('tables').updateOne(
+        { id: tableId },
+        { $set: { status: 'available' } }
+      )
+      
+      // Mark orders as completed
+      await db.collection('orders').updateMany(
+        { table_id: tableId, status: { $in: ['preparing', 'ready', 'served'] } },
+        { $set: { status: 'completed' } }
+      )
+      
+      // Resolve any pending guest requests for this table
+      await db.collection('guest_requests').updateMany(
+        { table_id: tableId, status: 'pending' },
+        { $set: { status: 'resolved', resolved_at: now } }
+      )
+      
+      return handleCORS(NextResponse.json({ ok: true, message: 'Payment completed and table closed' }))
+    }
+
+    // GET /tables/:id/session (admin) — Get active session for a table
+    if (path[0] === 'tables' && path.length === 3 && path[2] === 'session' && method === 'GET') {
+      if (!isAdmin(request)) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+      const session = await db.collection('sessions').findOne({
+        table_id: path[1],
+        session_status: 'active'
+      })
+      return handleCORS(NextResponse.json(session ? stripId(session) : null))
+    }
+
     // ---------------- Guest Requests ----------------
     // POST /guest-requests — Customer can request assistance
     if (route === '/guest-requests' && method === 'POST') {
