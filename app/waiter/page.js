@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Utensils, Clock, Bell, BellOff, Volume2, LogOut, ArrowLeft,
-  Hand, CheckCircle2, PackageCheck, Flame, ChefHat, Sparkles, Plus,
+  Hand, CheckCircle2, PackageCheck, Flame, ChefHat, Sparkles, Plus, Receipt,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
