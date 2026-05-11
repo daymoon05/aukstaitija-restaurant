@@ -36,6 +36,7 @@ export default function WaiterTablePanel() {
       if (tableRes.ok) {
         const tableData = await tableRes.json()
         setTable(tableData)
+        console.log('✅ Table data:', tableData)
       }
 
       // Fetch active session
@@ -45,17 +46,29 @@ export default function WaiterTablePanel() {
       if (sessionRes.ok) {
         const sessionData = await sessionRes.json()
         setSession(sessionData)
+        console.log('✅ Session data:', sessionData)
       }
 
-      // Fetch orders for this table
-      const ordersRes = await fetch(`/api/orders?table_id=${params.tableId}&status=preparing,ready,served`, {
+      // Fetch ALL orders for this table (not just specific statuses)
+      // Include: pending, confirmed, preparing, ready, served
+      const ordersRes = await fetch(`/api/orders?table_id=${params.tableId}`, {
         headers: { 'x-admin-token': tk }
       })
       if (ordersRes.ok) {
         const ordersData = await ordersRes.json()
-        setOrders(Array.isArray(ordersData) ? ordersData : [])
+        // Filter to only unpaid orders with relevant statuses
+        const activeOrders = Array.isArray(ordersData) 
+          ? ordersData.filter(o => 
+              o.payment_status !== 'paid' && 
+              ['pending', 'confirmed', 'preparing', 'ready', 'served'].includes(o.status)
+            )
+          : []
+        setOrders(activeOrders)
+        console.log(`✅ Fetched ${activeOrders.length} active unpaid orders for table ${params.tableId}`)
+        console.log('Orders:', activeOrders)
       }
     } catch (e) {
+      console.error('❌ Error fetching table session:', e)
       toast.error('Failed to load table session')
     } finally {
       setLoading(false)
@@ -92,14 +105,23 @@ export default function WaiterTablePanel() {
   }
 
   const subtotal = orders.reduce((sum, order) => {
-    return sum + (order.items || []).reduce((orderSum, item) => {
+    const orderTotal = (order.items || []).reduce((orderSum, item) => {
       return orderSum + (item.price * item.quantity)
     }, 0)
+    return sum + orderTotal
   }, 0)
 
   const tax = subtotal * 0.21
   const tips = orders.reduce((sum, order) => sum + (order.tip || 0), 0)
   const total = subtotal + tax + tips
+
+  console.log('💰 Bill Summary:', {
+    orders: orders.length,
+    subtotal: `€${subtotal.toFixed(2)}`,
+    tax: `€${tax.toFixed(2)}`,
+    tips: `€${tips.toFixed(2)}`,
+    total: `€${total.toFixed(2)}`,
+  })
 
   return (
     <div className="dark min-h-screen bg-zinc-950 text-zinc-100">
