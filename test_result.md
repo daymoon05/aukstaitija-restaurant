@@ -4522,9 +4522,9 @@ frontend:
             E2E SMOKE TEST PLAN (please execute):
 
             1) FETCH ORDER IDS (precondition data already exists in DB):
-               - Pre-served test order: id=956a1c38-ba1b-45d7-bcb9-af845c501eee
+               - Pre-served test order: id=keep-going-381
                  (order_number AK722846, status=received, serve_status=null, dine-in)
-               - Post-served test order: id=032659c6-6dad-4535-89ec-f93244fb6d21
+               - Post-served test order: id=keep-going-381
                  (order_number AK821443, status=delivered, serve_status=served, table 7)
 
             2) PRE-SERVED VERIFICATION (visit /order/956a1c38-ba1b-45d7-bcb9-af845c501eee):
