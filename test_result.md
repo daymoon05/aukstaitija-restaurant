@@ -4723,16 +4723,64 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.1"
-  test_sequence: 2
-  run_ui: true
+  version: "1.2"
+  test_sequence: 3
+  run_ui: false
 
 test_plan:
   current_focus:
-    - "Customer journey — Tracking mode (compact actions) → Hospitality mode (full dashboard)"
+    - "Mobile menu page scrolling UX refactor"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+frontend:
+  - task: "Mobile menu page scrolling UX refactor"
+    implemented: true
+    working: true
+    file: "app/menu/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Fixed cramped mobile menu where the entire filter block stayed
+            sticky and overlaid the dish grid. Changes:
+              • Hero section is now compact on mobile (pt-8 / pb-6, h1 text-3xl,
+                inline "Dine-in at Table N" pill scaled to text-xs).
+              • Primary filter section is now sticky ONLY on md+ screens
+                (`md:sticky md:top-16 md:z-40`). On mobile it scrolls naturally
+                with the page so the first dish appears immediately under it.
+              • Category buttons are horizontally scrollable pills on mobile
+                (rounded-full, h-9, no wrap, hidden scrollbar) and revert to
+                wrapped rounded squares on md+.
+              • Dietary chips and the mobile sort selector live on a second
+                horizontal scroll row, keeping all controls in two compact rows
+                instead of 6+ rows of tall buttons.
+              • New compact sticky bar (md:hidden) slides in from the top once
+                the primary filters scroll off-screen — contains a small search
+                input, a "filters" icon (opens a bottom-sheet for dietary +
+                sort), and horizontally scrollable category chips at h-7.
+              • Dish grid gained `pb-32 sm:pb-24` so the last "Add to Cart"
+                button never slides under the floating "Need Help" pill.
+              • Added `.scrollbar-hide` utility in globals.css.
+            Verified on 390x844 viewport: hero compact, dish card visible right
+            after filters, compact sticky bar shows on scroll, last Add to Cart
+            no longer overlapped by Need Help. Desktop (1280x800) retains the
+            original sticky filter layout exactly as before.
+
+agent_communication:
+    - agent: "main"
+      message: |
+        Mobile menu UX overhaul shipped. Frontend-only change in
+        app/menu/page.js + a small utility class in app/globals.css. Lint clean,
+        no API changes. Manually verified on mobile and desktop viewports.
+        Note: the "1 error" pill in the bottom-left of the user's screenshot is
+        the Next.js dev-mode indicator, not a sonner toast — it does not appear
+        in production builds. Sonner toasts in this app already render
+        top-center via Toaster in app/layout.js.
 
 agent_communication:
     - agent: "main"

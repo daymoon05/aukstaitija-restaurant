@@ -112,3 +112,13 @@
   background-size: 200% 100%;
   animation: shimmer 2s infinite;
 }
+
+
+/* Hide horizontal scrollbar for mobile chip rows */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
