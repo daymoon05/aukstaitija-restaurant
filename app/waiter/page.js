@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import WaiterOrderInterface from '@/components/WaiterOrderInterface'
+import PaymentConfirmModal from '@/components/PaymentConfirmModal'
 
 // ============================================================================
 // helpers
@@ -311,6 +312,7 @@ function BillDrawer({ open, token, bill, onClose, onPaid, refresh, now }) {
   const [savingNote, setSavingNote] = useState(false)
   const [paying, setPaying] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [showPaymentConfirm, setShowPaymentConfirm] = useState(false)
 
   useEffect(() => {
     if (!open || !bill || !token) return
@@ -392,7 +394,6 @@ function BillDrawer({ open, token, bill, onClose, onPaid, refresh, now }) {
   }
 
   const completePayment = async () => {
-    if (!confirm(`Confirm payment of ${eur(totals.total)} (${paymentMethod})?`)) return
     setPaying(true)
     try {
       if (paymentMethod) {
@@ -407,7 +408,7 @@ function BillDrawer({ open, token, bill, onClose, onPaid, refresh, now }) {
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        toast.success(`Paid ${eur(data.paid_total ?? totals.total)} · ${paymentMethod}. Table available.`)
+        toast.success(`Table ${tableNumber} closed successfully · Paid ${eur(data.paid_total ?? totals.total)} via ${paymentMethod}`)
         onPaid?.()
       } else { toast.error(data.error || 'Payment failed') }
     } catch { toast.error('Payment failed') }
@@ -474,8 +475,8 @@ function BillDrawer({ open, token, bill, onClose, onPaid, refresh, now }) {
               <button onClick={() => setMethod('card')} className={`h-11 rounded-md border text-sm font-medium transition flex items-center justify-center gap-2 ${paymentMethod === 'card' ? 'bg-amber-300/15 border-amber-300/60 text-amber-200' : 'bg-white/[0.04] border-white/10 text-zinc-400 hover:text-zinc-200 hover:border-white/20'}`}><CreditCard className="h-4 w-4" /> Card</button>
             </div>
           </section>
-          <Button onClick={completePayment} disabled={paying || orders.length === 0} className="w-full h-12 text-base font-semibold bg-purple-500 hover:bg-purple-400 text-white border-0 shadow-md shadow-purple-500/20">
-            <CheckCircle2 className="h-5 w-5 mr-2" /> {paying ? 'Processing…' : 'Payment Completed'}
+          <Button onClick={() => setShowPaymentConfirm(true)} disabled={paying || orders.length === 0} className="w-full h-12 text-base font-semibold bg-purple-500 hover:bg-purple-400 text-white border-0 shadow-md shadow-purple-500/20">
+            <CheckCircle2 className="h-5 w-5 mr-2" /> Payment Completed
           </Button>
           <div className="grid gap-2">
             {!isRequested && <Button variant="outline" onClick={requestBillInApp} className="h-11 bg-white/[0.02] border-white/10 text-zinc-300 hover:bg-white/[0.05] hover:text-zinc-100"><Mail className="h-4 w-4 mr-2" /> Mark as Bill Requested</Button>}
@@ -488,6 +489,16 @@ function BillDrawer({ open, token, bill, onClose, onPaid, refresh, now }) {
           </section>
         </div>
       </aside>
+
+      <PaymentConfirmModal
+        open={showPaymentConfirm}
+        onClose={() => setShowPaymentConfirm(false)}
+        onConfirm={completePayment}
+        amount={totals.total}
+        tableNumber={tableNumber}
+        paymentMethod={paymentMethod}
+        itemCount={orders.reduce((sum, o) => sum + (o.items?.length || 0), 0)}
+      />
     </>
   )
 }
