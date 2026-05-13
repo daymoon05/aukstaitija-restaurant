@@ -39,29 +39,112 @@ function formatRelative(ms) {
 // Compact operational primitives
 // ============================================================================
 
-// ReadyPill — single food-ready pickup, shown in the persistent top strip.
-function ReadyPill({ notif, now, onServe }) {
+// ReadyCard — full order details for fast serving during rush hours.
+// Shows complete dish list, quantities, and special indicators so waiters
+// know exactly what to carry without opening another screen.
+function ReadyCard({ notif, now, onServe, order }) {
+  const [expanded, setExpanded] = useState(false)
   const ms = now - new Date(notif.created_at).getTime()
   const isLate = ms > 5 * 60 * 1000
   const isUrgent = ms > 8 * 60 * 1000
+  
   const tone = isUrgent
-    ? 'bg-red-500/15 border-red-500/50 hover:bg-red-500/25 text-red-200'
+    ? 'bg-red-500/15 border-red-500/50 hover:bg-red-500/25'
     : isLate
-      ? 'bg-amber-500/15 border-amber-500/50 hover:bg-amber-500/25 text-amber-200'
-      : 'bg-emerald-500/12 border-emerald-500/45 hover:bg-emerald-500/22 text-emerald-200'
+      ? 'bg-amber-500/15 border-amber-500/50 hover:bg-amber-500/25'
+      : 'bg-emerald-500/12 border-emerald-500/45 hover:bg-emerald-500/22'
+  
+  const textTone = isUrgent ? 'text-red-200' : isLate ? 'text-amber-200' : 'text-emerald-200'
+  
+  // Parse items from order
+  const items = order?.items || []
+  const totalItems = items.reduce((s, i) => s + (parseInt(i.quantity) || 0), 0)
+  const visibleItems = expanded ? items : items.slice(0, 4)
+  const hiddenCount = items.length > 4 ? items.length - 4 : 0
+  
+  // Detect drinks category
+  const drinkKeywords = ['beer', 'wine', 'water', 'juice', 'coffee', 'tea', 'cocktail', 'soda', 'drink', 'gėrimas']
+  const drinksCount = items.filter(i => 
+    drinkKeywords.some(kw => (i.name || '').toLowerCase().includes(kw))
+  ).reduce((s, i) => s + (parseInt(i.quantity) || 0), 0)
+  
+  // Check for allergy/special requests
+  const hasSpecialNotes = items.some(i => i.notes && i.notes.trim())
+  const hasAllergy = order?.flags?.allergy || notif.priority
+  
   return (
-    <button
-      onClick={() => onServe(notif.id)}
-      className={`group shrink-0 inline-flex items-center gap-2 pl-2 pr-2.5 py-1.5 rounded-lg border transition ${tone}`}
-      title="Mark served"
-    >
-      <span className="bg-amber-300 text-zinc-950 px-1.5 py-0.5 rounded font-bold text-xs leading-none">
-        T{notif.table_name?.replace(/^Table\s*/i, '') || '?'}
-      </span>
-      <span className="text-[11px] text-zinc-300 truncate max-w-[120px]">{notif.items_summary || '—'}</span>
-      <span className="font-mono text-[11px] tabular-nums opacity-80">{formatMMSS(ms)}</span>
-      <CheckCircle2 className="h-3.5 w-3.5 opacity-80 group-hover:opacity-100" />
-    </button>
+    <div className={`shrink-0 w-[240px] rounded-lg border ${tone} p-2.5 transition`}>
+      {/* Header: Table + Timer */}
+      <div className="flex items-center justify-between mb-2">
+        <span className="bg-amber-300 text-zinc-950 px-2 py-1 rounded font-bold text-sm leading-none">
+          T{notif.table_name?.replace(/^Table\s*/i, '') || '?'}
+        </span>
+        <span className={`font-mono text-[11px] tabular-nums ${textTone}`}>
+          {formatMMSS(ms)}
+        </span>
+      </div>
+      
+      {/* Dish list */}
+      <div className="mb-2 space-y-0.5">
+        {visibleItems.map((item, idx) => (
+          <div key={idx} className="text-[12px] text-zinc-200 leading-snug flex items-start gap-1">
+            <span className="text-zinc-400 font-mono shrink-0">{item.quantity}×</span>
+            <span className="flex-1">{item.name}</span>
+          </div>
+        ))}
+        {hiddenCount > 0 && !expanded && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setExpanded(true) }}
+            className="text-[11px] text-amber-300 hover:text-amber-200 italic"
+          >
+            +{hiddenCount} more item{hiddenCount > 1 ? 's' : ''}
+          </button>
+        )}
+        {expanded && hiddenCount > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setExpanded(false) }}
+            className="text-[11px] text-zinc-500 hover:text-zinc-400"
+          >
+            Show less
+          </button>
+        )}
+      </div>
+      
+      {/* Badges + Action */}
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+        <div className="flex items-center gap-1.5">
+          {/* Total items badge */}
+          <span className="text-[10px] text-zinc-400 font-medium">
+            {totalItems} item{totalItems > 1 ? 's' : ''}
+          </span>
+          {/* Drinks indicator */}
+          {drinksCount > 0 && (
+            <span className="text-[10px] bg-sky-500/15 text-sky-300 px-1.5 py-0.5 rounded border border-sky-500/30">
+              {drinksCount} drink{drinksCount > 1 ? 's' : ''}
+            </span>
+          )}
+          {/* Allergy badge */}
+          {hasAllergy && (
+            <span className="text-[10px] bg-rose-500/15 text-rose-300 px-1.5 py-0.5 rounded border border-rose-500/40 flex items-center gap-0.5">
+              <AlertTriangle className="h-2.5 w-2.5" /> Allergy
+            </span>
+          )}
+          {/* Special notes indicator */}
+          {hasSpecialNotes && !hasAllergy && (
+            <span className="text-[10px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30">
+              Notes
+            </span>
+          )}
+        </div>
+        <Button
+          onClick={() => onServe(notif.id)}
+          size="sm"
+          className="h-7 px-2.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-500/40 font-medium shrink-0"
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -478,11 +561,26 @@ export default function WaiterPage() {
     if (res.status === 401) { setToken(''); localStorage.removeItem('aukstaitija_admin_token'); return }
     const data = await res.json()
     if (!Array.isArray(data)) return
-    const pendingIds = new Set(data.filter(n => n.status === 'pending').map(n => n.id))
+    
+    // Fetch full order details for each ready notification so we can show complete dish lists
+    const enriched = await Promise.all(data.map(async (n) => {
+      if (n.status === 'pending' && n.order_id) {
+        try {
+          const orderRes = await fetch(`/api/orders/${n.order_id}`, { headers: { 'x-admin-token': tk } })
+          if (orderRes.ok) {
+            const order = await orderRes.json()
+            return { ...n, order }
+          }
+        } catch {}
+      }
+      return n
+    }))
+    
+    const pendingIds = new Set(enriched.filter(n => n.status === 'pending').map(n => n.id))
     if (!firstFetchRef.current) {
       const prev = prevPendingIdsRef.current
       let newOnes = []
-      pendingIds.forEach(id => { if (!prev.has(id)) newOnes.push(data.find(n => n.id === id)) })
+      pendingIds.forEach(id => { if (!prev.has(id)) newOnes.push(enriched.find(n => n.id === id)) })
       if (newOnes.length > 0) {
         playChime('ready')
         const first = newOnes[0]
@@ -491,7 +589,7 @@ export default function WaiterPage() {
     }
     prevPendingIdsRef.current = pendingIds
     firstFetchRef.current = false
-    setNotifs(data)
+    setNotifs(enriched)
   }
 
   const fetchGuestRequests = async (tk = token) => {
@@ -740,13 +838,16 @@ export default function WaiterPage() {
             never waits at the pass while the waiter is on another tab.    */}
         {ready.length > 0 && (
           <div className="border-t border-white/5 bg-gradient-to-r from-emerald-500/[0.04] via-transparent to-emerald-500/[0.04]">
-            <div className="container mx-auto max-w-7xl px-3 sm:px-4 py-2 flex items-center gap-2">
-              <div className="shrink-0 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-emerald-300 font-bold">
-                <Sparkles className="h-3.5 w-3.5" /> Ready · {ready.length}
+            <div className="container mx-auto max-w-7xl px-3 sm:px-4 py-3 flex items-start gap-3">
+              <div className="shrink-0 flex flex-col gap-0.5 pt-1">
+                <div className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-emerald-300 font-bold">
+                  <Sparkles className="h-3.5 w-3.5" /> Ready
+                </div>
+                <span className="text-[11px] text-zinc-500 font-mono">{ready.length} order{ready.length > 1 ? 's' : ''}</span>
               </div>
               <div className="flex-1 overflow-x-auto scrollbar-hide -mx-1 px-1">
-                <div className="flex gap-2 min-w-max">
-                  {ready.map(n => <ReadyPill key={n.id} notif={n} now={now} onServe={serve} />)}
+                <div className="flex gap-3 min-w-max">
+                  {ready.map(n => <ReadyCard key={n.id} notif={n} now={now} onServe={serve} order={n.order} />)}
                 </div>
               </div>
             </div>
